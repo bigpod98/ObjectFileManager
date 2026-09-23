@@ -1,0 +1,17 @@
+# Generated from the shared, locally built Electron payload. No install-time downloads.
+pkgname=s3-browser
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Desktop browser and bulk uploader for S3-compatible storage'
+arch=('x86_64')
+license=('LicenseRef-Unknown')
+depends=('glibc>=2.31' 'gtk3' 'nss' 'nspr' 'at-spi2-core' 'libcups' 'dbus' 'cairo' 'pango' 'libx11' 'libxcomposite' 'libxdamage' 'libxext' 'libxfixes' 'libxrandr' 'mesa' 'expat' 'libxcb' 'libxkbcommon' 'systemd-libs' 'alsa-lib' 'glib2' 'gcc-libs' 'libsecret' 'ca-certificates')
+optdepends=('gnome-keyring: save connection credentials in the desktop keyring')
+options=('!strip' '!debug')
+source=('payload.tar.gz')
+sha256sums=('@SHA256@')
+
+package() {
+  cp -a "$srcdir/payload/." "$pkgdir/"
+  chmod 4755 "$pkgdir/opt/s3-browser/chrome-sandbox"
+}

@@ -1,0 +1,42 @@
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%global _build_id_links none
+%global _binary_payload w3.zstdio
+Name: s3-browser
+Version: @VERSION@
+Release: 1
+Summary: Desktop browser and bulk uploader for S3-compatible storage
+License: LicenseRef-Unknown
+Packager: Primož Ajdišek <bigpod@bigpod.si>
+BuildArch: x86_64
+AutoReqProv: no
+Requires: glibc >= 2.31
+Requires: gtk3, nss, nspr, at-spi2-atk, at-spi2-core, cups-libs, dbus-libs
+Requires: cairo, pango, libX11, libXcomposite, libXdamage, libXext, libXfixes, libXrandr
+Requires: mesa-libgbm, expat, libxcb, libxkbcommon, systemd-libs, alsa-lib, glib2, libgcc, libsecret, ca-certificates
+Recommends: gnome-keyring
+
+%description
+Browse Amazon S3, Cloudflare R2, Ceph, MinIO, and custom S3 endpoints.
+Upload entire folder trees using a persistent queue with pause and retry.
+
+%prep
+# The shared npm build generates the Electron application payload.
+
+%build
+
+%install
+mkdir -p %{buildroot}
+cp -a /input/payload/. %{buildroot}/
+
+%check
+desktop-file-validate %{buildroot}/usr/share/applications/com.tuxbase.s3browser.desktop
+
+%files
+%defattr(-,root,root,-)
+/opt/s3-browser
+/usr/bin/s3-browser
+/usr/share/applications/com.tuxbase.s3browser.desktop
+/usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png
+/usr/share/doc/s3-browser
+/usr/share/licenses/s3-browser

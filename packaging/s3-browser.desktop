@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=S3 Browser
+Comment=Browse and upload to S3-compatible storage
+Exec=s3-browser
+Icon=com.tuxbase.s3browser
+Terminal=false
+Categories=Utility;Network;FileTransfer;
+StartupWMClass=com.tuxbase.s3browser
+StartupNotify=true

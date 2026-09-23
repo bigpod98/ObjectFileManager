@@ -1,0 +1,70 @@
+{
+  "name": "s3-browser",
+  "version": "0.1.1",
+  "description": "A desktop browser and durable bulk uploader for S3-compatible storage",
+  "private": true,
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "dist": "node scripts/package-linux.cjs",
+    "pack": "electron-builder --dir",
+    "test:desktop": "node test/desktop.cjs",
+    "test:scale": "node test/scale.cjs",
+    "format": "prettier --write src test scripts package.json README.md packaging/README.md",
+    "check": "prettier --check src test scripts package.json README.md packaging/README.md",
+    "dist:packages": "node scripts/package-linux.cjs",
+    "test:packages": "node scripts/validate-packages.cjs",
+    "dist:portable": "electron-builder --linux tar.gz",
+    "test:desktop:expansion": "node test/desktop-expansion.cjs"
+  },
+  "build": {
+    "appId": "com.tuxbase.s3browser",
+    "productName": "S3 Browser",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "assets/icon.png"
+    ],
+    "linux": {
+      "category": "Utility",
+      "target": [
+        "tar.gz"
+      ],
+      "icon": "assets/icon.png",
+      "desktop": {
+        "entry": {
+          "Name": "S3 Browser",
+          "Comment": "Browse and upload to S3-compatible storage"
+        }
+      },
+      "syncDesktopName": true,
+      "artifactName": "${name}-${version}-linux-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities"
+    }
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1136.0",
+    "@aws-sdk/lib-storage": "^3.1136.0",
+    "@aws-sdk/s3-request-presigner": "^3.1138.0",
+    "mime-types": "^3.0.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "prettier": "^3.9.8"
+  },
+  "author": "bigpod",
+  "desktopName": "com.tuxbase.s3browser.desktop"
+}
