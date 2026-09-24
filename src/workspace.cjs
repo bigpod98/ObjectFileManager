@@ -11,6 +11,7 @@ class Workspace {
     this.auto = false;
     this.closed = false;
     this.finishing = null;
+    this.activeRun = null;
     this.plans = new Map();
     queue.db
       .exec(`CREATE TABLE IF NOT EXISTS sync_runs(job TEXT PRIMARY KEY, plan TEXT NOT NULL, state TEXT NOT NULL, error TEXT);
@@ -81,19 +82,22 @@ class Workspace {
             sync: true,
             cleanupState: run.state,
             state:
-              run.state === "failed"
-                ? "failed"
-                : run.state === "running"
-                  ? "running"
-                  : run.state === "pending" && j.state === "complete"
-                    ? "paused"
-                    : j.state,
+              run.state === "cancelled"
+                ? "cancelled"
+                : run.state === "failed"
+                  ? "failed"
+                  : run.state === "running"
+                    ? "running"
+                    : run.state === "pending" && j.state === "complete"
+                      ? "paused"
+                      : j.state,
             error: run.error || j.error,
           }
         : j;
     });
   }
-  async finishSync(id) {
+  async finishSync(id, signal) {
+    if (signal?.aborted) return;
     const run = this.queue.db
       .prepare("SELECT * FROM sync_runs WHERE job=?")
       .get(id);
@@ -107,7 +111,9 @@ class Workspace {
       const result = await sync.executeDeletions(
         this.getClient(job.profile),
         JSON.parse(run.plan),
+        signal,
       );
+      signal?.throwIfAborted();
       if (result?.failed || result?.failures?.length)
         throw new Error(
           result.failures.map((f) => `${f.key}: ${f.error}`).join("\n"),
@@ -117,25 +123,34 @@ class Workspace {
         .run(id);
     } catch (e) {
       this.queue.db
-        .prepare("UPDATE sync_runs SET state='failed',error=? WHERE job=?")
-        .run(`Sync cleanup: ${e.message}`, id);
+        .prepare(
+          "UPDATE sync_runs SET state=?,error=? WHERE job=? AND state!='cancelled'",
+        )
+        .run(
+          signal?.aborted ? "pending" : "failed",
+          signal?.aborted ? null : `Sync cleanup: ${e.message}`,
+          id,
+        );
     }
   }
   async start(id) {
     if (this.closed) throw new Error("The application is closing.");
-    if (this.finishing || this.queue.running)
+    if (this.activeRun || this.finishing || this.queue.running)
       throw new Error("Pause the current batch before starting another.");
     const job = this.queue.list().find((j) => j.id === id);
     if (!job) throw new Error("Batch not found.");
     const context = this.getClient(job.profile);
+    const active = { id, controller: new AbortController() };
+    this.activeRun = active;
     this.activity(true);
     try {
       await this.queue.start(id, context);
       const finished = this.queue.running?.finished || Promise.resolve();
       this.finishing = finished
-        .then(() => this.finishSync(id))
+        .then(() => this.finishSync(id, active.controller.signal))
         .finally(() => {
           this.finishing = null;
+          this.activeRun = null;
           this.activity(false);
           const completed =
             this.list().find((job) => job.id === id)?.state === "complete";
@@ -151,6 +166,7 @@ class Workspace {
       });
       return { started: true };
     } catch (e) {
+      this.activeRun = null;
       this.activity(false);
       throw e;
     }
@@ -176,17 +192,23 @@ class Workspace {
   }
   async pause() {
     this.auto = false;
+    // Abort before waiting for uploads so a pause at their completion cannot
+    // cross into cleanup. The same signal covers validation and remote I/O.
+    this.activeRun?.controller.abort();
     await this.queue.pause();
     await this.finishing;
   }
   async cancel(id) {
-    if (this.finishing && !this.queue.running)
-      throw new Error("Wait for sync cleanup to finish.");
+    const active = this.activeRun?.id === id ? this.activeRun : null;
     this.queue.db
       .prepare("UPDATE sync_runs SET state='cancelled',error=NULL WHERE job=?")
       .run(id);
-    if (this.queue.running?.id === id) await this.pause();
-    return this.queue.cancel(id);
+    if (active) {
+      this.auto = false;
+      active.controller.abort();
+    }
+    await this.queue.cancel(id);
+    if (active) await this.finishing;
   }
   retry(id) {
     const syncRun = this.queue.db

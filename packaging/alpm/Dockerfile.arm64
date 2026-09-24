@@ -1,0 +1,15 @@
+# Arch's official Docker image is x86_64 only. Bootstrap the ARM port from its
+# upstream root filesystem over HTTPS, then use its signed package repositories.
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS rootfs
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl libarchive-tools
+RUN mkdir /rootfs && curl --fail --silent --show-error --location --retry 3 https://de3.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz -o /rootfs.tar.gz \
+    && bsdtar -xpf /rootfs.tar.gz -C /rootfs --exclude './dev/*' --exclude './boot/*' \
+    && rm /rootfs.tar.gz
+FROM scratch
+COPY --from=rootfs /rootfs/ /
+# QEMU user emulation cannot provide pacman's Landlock download sandbox.
+# This affects only the disposable builder, not the installed application.
+RUN sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf \
+    && pacman-key --init && pacman-key --populate archlinuxarm \
+    && pacman -Syu --noconfirm base-devel desktop-file-utils xorg-server-xvfb xorg-xauth curl python python-websocket-client ttf-dejavu \
+    && pacman -Scc --noconfirm

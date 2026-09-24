@@ -291,6 +291,33 @@ const {
     await expect(page.locator("#object-body")).toContainText("ETag");
     await page.getByText("Edit metadata", { exact: true }).click();
     await expect(page.locator("#object-metadata")).toContainText("expanded");
+    // A metadata-only write keeps the ETag but must invalidate the open editor.
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: "readme.txt",
+        Body: "hello",
+        Metadata: { test: "concurrent-edit" },
+        ContentType: "text/plain",
+      }),
+    );
+    await page.locator("#metadata-confirm").check();
+    await page.locator("#metadata-save").click();
+    await expect(page.locator("#object-error")).toContainText("object changed");
+    assert.equal(
+      (
+        await s3.send(
+          new HeadObjectCommand({ Bucket: bucket, Key: "readme.txt" }),
+        )
+      ).Metadata.test,
+      "concurrent-edit",
+    );
+    await page.locator('[data-close="object-dialog"]').click();
+    await page.locator('#files .file-name[title="readme.txt"]').click();
+    await page.getByText("Edit metadata", { exact: true }).click();
+    await expect(page.locator("#object-metadata")).toContainText(
+      "concurrent-edit",
+    );
     await page
       .locator("#object-metadata")
       .fill(

@@ -8,7 +8,7 @@ Release: 1
 Summary: Desktop browser and bulk uploader for S3-compatible storage
 License: LicenseRef-Unknown
 Packager: Primož Ajdišek <bigpod@bigpod.si>
-BuildArch: x86_64
+BuildArch: @NATIVE_ARCH@
 AutoReqProv: no
 Requires: glibc >= 2.31
 Requires: gtk3, nss, nspr, at-spi2-atk, at-spi2-core, cups-libs, dbus-libs

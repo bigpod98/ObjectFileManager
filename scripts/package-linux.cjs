@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
+const { containerTask } = require("./docker-task.cjs");
 const root = path.resolve(__dirname, "..");
 process.chdir(root);
 const version = require("../package.json").version;
@@ -9,8 +10,10 @@ if (!/^\d+\.\d+\.\d+$/.test(version))
   throw new Error(
     "Native packaging currently requires a stable major.minor.patch version.",
   );
-if (process.platform !== "linux" || process.arch !== "x64")
-  throw new Error("These package recipes currently target Linux x86_64 only.");
+if (process.platform !== "linux")
+  throw new Error("Native packaging requires Linux.");
+const { target, verifyExecutable } = require("./package-target.cjs");
+const arch = target(process.argv.slice(2));
 const requested = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const formats = requested.length ? requested : ["deb", "rpm", "alpm"];
 if (formats.some((f) => !["deb", "rpm", "alpm"].includes(f)))
@@ -22,10 +25,19 @@ function run(cmd, args) {
     throw new Error(`${cmd} failed with status ${result.status}`);
 }
 if (!process.argv.includes("--skip-bundle"))
-  run("npm", ["run", "pack", "--", "--linux", "--x64"]);
-const bundle = path.join(root, "dist/linux-unpacked");
+  run("npm", [
+    "run",
+    "pack",
+    "--",
+    "--linux",
+    `--${arch.electron}`,
+    "--publish",
+    "never",
+  ]);
+const bundle = path.join(root, `dist/${arch.bundle}`);
 if (!fs.existsSync(path.join(bundle, "resources/app.asar")))
   throw new Error("Build the application first: npm run pack");
+verifyExecutable(path.join(bundle, "s3-browser"), arch);
 const work = path.join(root, "dist/native");
 fs.mkdirSync(work, { recursive: true });
 const input = fs.mkdtempSync(path.join(work, "input-"));
@@ -73,7 +85,9 @@ copy(
 function render(source, target, extra = {}) {
   let content = fs
     .readFileSync(source, "utf8")
-    .replaceAll("@VERSION@", version);
+    .replaceAll("@VERSION@", version)
+    .replaceAll("@DEB_ARCH@", arch.deb)
+    .replaceAll("@NATIVE_ARCH@", arch.native);
   for (const [key, value] of Object.entries(extra))
     content = content.replaceAll(`@${key}@`, value);
   fs.writeFileSync(path.join(input, target), content);
@@ -103,26 +117,24 @@ try {
     fs.mkdirSync(output, { recursive: true });
     run("docker", [
       "build",
+      "--platform",
+      arch.platform,
       "-t",
-      `s3browser-packaging-${format}`,
+      `s3browser-packaging-${format}-${arch.electron}`,
       "-f",
-      `packaging/${format}/Dockerfile`,
+      `packaging/${format}/Dockerfile${format === "alpm" && arch.electron === "arm64" ? ".arm64" : ""}`,
       "packaging",
     ]);
-    run("docker", [
-      "run",
-      "--rm",
-      "-v",
-      `${input}:/input:ro`,
-      "-v",
-      `${output}:/output`,
-      "-v",
-      `${root}/packaging:/recipes:ro`,
-      `s3browser-packaging-${format}`,
-      "bash",
-      "/recipes/build-native.sh",
-      format,
-    ]);
+    containerTask({
+      image: `s3browser-packaging-${format}-${arch.electron}`,
+      platform: arch.platform,
+      command: ["bash", "/recipes/build-native.sh", format],
+      inputs: [
+        [input, "/input"],
+        [path.join(root, "packaging"), "/recipes"],
+      ],
+      output: ["/output/.", output],
+    });
   }
 } finally {
   fs.rmSync(input, { recursive: true, force: true });

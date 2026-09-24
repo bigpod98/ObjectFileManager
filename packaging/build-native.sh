@@ -14,16 +14,19 @@ case "$format" in
   rpm)
     mkdir -p /build/rpm/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
     rpmbuild -bb --define '_topdir /build/rpm' /input/s3-browser.spec
-    cp /build/rpm/RPMS/x86_64/*.rpm /output/
+    cp /build/rpm/RPMS/*/*.rpm /output/
     rpm -qip /output/*.rpm
     ;;
   alpm)
     useradd -m builder
     cp /input/PKGBUILD /input/payload.tar.gz /build/
+    cp /etc/makepkg.conf /build/makepkg.conf
+    # Arch Linux ARM defaults to xz; use the same release format on both arches.
+    sed -i "s/^PKGEXT=.*/PKGEXT='.pkg.tar.zst'/" /build/makepkg.conf
     chown -R builder:builder /build
     cd /build
     # Dependencies belong to the installation test; this recipe repacks an already built app.
-    runuser -u builder -- env PACKAGER="Primož Ajdišek <bigpod@bigpod.si>" makepkg --nodeps --noconfirm
+    runuser -u builder -- env PACKAGER="Primož Ajdišek <bigpod@bigpod.si>" makepkg --config /build/makepkg.conf --nodeps --noconfirm
     cp /build/*.pkg.tar.zst /output/
     pacman -Qip /output/*.pkg.tar.zst
     ;;

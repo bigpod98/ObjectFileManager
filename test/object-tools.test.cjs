@@ -147,15 +147,18 @@ test("metadata editing preserves attributes and tags while replacing only reques
   };
   const s3 = client([
     head,
+    head,
     { CopyObjectResult: { ETag: '"new"' }, VersionId: "new-version" },
   ]);
+  const info = await tools.details(s3, { bucket: "b", key: "some key/世界" });
   const result = await tools.metadata(s3, {
     bucket: "b",
     key: "some key/世界",
     metadata: { Owner: "new" },
     contentType: "application/json",
+    expectedSnapshot: info.metadataSnapshot,
   });
-  const copy = s3.calls[1].input;
+  const copy = s3.calls[2].input;
   for (const attribute of [
     "ContentEncoding",
     "CacheControl",
@@ -193,6 +196,7 @@ test("metadata editing uses bounded multipart copy for large objects", async () 
   };
   const replies = [
     head,
+    head,
     { TagSet: [{ Key: "project", Value: "my project" }] },
     { UploadId: "upload" },
     ...Array.from({ length: 11 }, () => ({
@@ -201,10 +205,12 @@ test("metadata editing uses bounded multipart copy for large objects", async () 
     { ETag: '"finished"' },
   ];
   const s3 = client(replies);
+  const info = await tools.details(s3, { bucket: "b", key: "large" });
   await tools.metadata(s3, {
     bucket: "b",
     key: "large",
     metadata: { owner: "new" },
+    expectedSnapshot: info.metadataSnapshot,
   });
   const create = s3.calls.find(
     (c) => c.constructor.name === "CreateMultipartUploadCommand",
@@ -222,6 +228,107 @@ test("metadata editing uses bounded multipart copy for large objects", async () 
   );
   assert.ok(parts.every((c) => c.input.CopySourceIfMatch === '"source"'));
   assert.equal(s3.calls.at(-1).input.IfMatch, '"source"');
+});
+
+test("metadata save rejects changes since details were reviewed, including unchanged ETags", async () => {
+  const head = {
+    ContentLength: 3,
+    ETag: '"source"',
+    VersionId: "v1",
+    LastModified: new Date("2026-01-01"),
+    ContentType: "text/plain",
+    Metadata: { owner: "original" },
+    CacheControl: "private",
+  };
+  const changes = [
+    { ETag: '"replacement"', ContentLength: 5 },
+    { Metadata: { owner: "someone else" } },
+    { VersionId: "v2" },
+    { ContentType: "application/json" },
+    { CacheControl: "public" },
+    { LastModified: new Date("2026-01-02") },
+    { WebsiteRedirectLocation: "/new" },
+    { ObjectLockLegalHoldStatus: "ON" },
+  ];
+  for (const change of changes) {
+    const s3 = client([head, { ...head, ...change }]);
+    const info = await tools.details(s3, { bucket: "b", key: "a" });
+    await assert.rejects(
+      tools.metadata(s3, {
+        bucket: "b",
+        key: "a",
+        metadata: { owner: "my edit" },
+        expectedSnapshot: info.metadataSnapshot,
+      }),
+      /object changed/,
+      JSON.stringify(change),
+    );
+    assert.ok(
+      s3.calls.every((c) => c.constructor.name === "HeadObjectCommand"),
+    );
+  }
+});
+
+test("metadata snapshots ignore request diagnostics and metadata property order", async () => {
+  const head = {
+    ContentLength: 3,
+    ETag: '"source"',
+    Metadata: { a: "1", b: "2" },
+    $metadata: { requestId: "first" },
+  };
+  const s3 = client([
+    head,
+    { ...head, Metadata: { b: "2", a: "1" }, $metadata: { requestId: "next" } },
+    { CopyObjectResult: { ETag: '"saved"' } },
+  ]);
+  const info = await tools.details(s3, { bucket: "b", key: "a" });
+  await tools.metadata(s3, {
+    bucket: "b",
+    key: "a",
+    metadata: {},
+    expectedSnapshot: info.metadataSnapshot,
+  });
+  assert.equal(s3.calls.at(-1).constructor.name, "CopyObjectCommand");
+});
+
+test("metadata save requires a reviewed snapshot for the same object and connection", async () => {
+  const options = { profile: "profile", bucket: "b", key: "a", metadata: {} };
+  const empty = client([]);
+  for (const expectedSnapshot of [undefined, null, {}, "invalid"])
+    await assert.rejects(
+      tools.metadata(empty, { ...options, expectedSnapshot }),
+      /Refresh object details/,
+    );
+  assert.equal(empty.calls.length, 0);
+
+  const head = { ContentLength: 3, ETag: '"source"', Metadata: {} };
+  for (const context of [
+    { bucket: "other" },
+    { key: "other" },
+    { profile: "other" },
+  ]) {
+    const s3 = client([head, head]);
+    const info = await tools.details(s3, options);
+    await assert.rejects(
+      tools.metadata(s3, {
+        ...options,
+        ...context,
+        expectedSnapshot: info.metadataSnapshot,
+      }),
+      /object changed or its connection changed/,
+    );
+    assert.equal(s3.calls.length, 2);
+  }
+  const info = await tools.details(client([head]), options);
+  const replacementConnection = client([head]);
+  await assert.rejects(
+    tools.metadata(replacementConnection, {
+      ...options,
+      expectedSnapshot: info.metadataSnapshot,
+    }),
+    /object changed or its connection changed/,
+  );
+  assert.equal(replacementConnection.calls.length, 1);
 });
 
 test("version restore reads selected version and conditionally creates a new current copy", async () => {
@@ -319,11 +426,15 @@ test("unsupported provider features and concurrent edits have actionable errors"
   const stale = Object.assign(new Error("stale"), {
     name: "PreconditionFailed",
   });
+  const head = { ContentLength: 1, ETag: '"a"' };
+  const s3 = client([head, head, stale]);
+  const info = await tools.details(s3, { bucket: "b", key: "a" });
   await assert.rejects(
-    tools.metadata(client([{ ContentLength: 1, ETag: '"a"' }, stale]), {
+    tools.metadata(s3, {
       bucket: "b",
       key: "a",
       metadata: {},
+      expectedSnapshot: info.metadataSnapshot,
     }),
     /object changed/,
   );

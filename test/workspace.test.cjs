@@ -395,3 +395,188 @@ test("preview types cannot be interchanged and expired tokens cannot execute", a
   await assert.rejects(f.workspace.execute(token), /expired/);
   assert.equal(deletes(f.s3).length, 0);
 });
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+for (const action of ["pause", "close"]) {
+  test(`${action} stops after an in-flight delete and restart resumes remaining cleanup`, async (t) => {
+    const f = await fixture(t);
+    f.s3.put("backup/second.txt");
+    const id = await syncJob(f, { upload: false });
+    const entered = deferred(),
+      release = deferred();
+    const send = f.s3.send.bind(f.s3);
+    let requestSignal;
+    f.s3.send = async (command, options) => {
+      if (command.constructor.name === "DeleteObjectCommand") {
+        requestSignal = options.abortSignal;
+        entered.resolve();
+        // Model a service that already accepted the delete before abort arrived.
+        await release.promise;
+      }
+      return send(command);
+    };
+    await f.workspace.start(id);
+    await entered.promise;
+    const stopping = f.workspace[action]();
+    assert.equal(requestSignal.aborted, true);
+    release.resolve();
+    await stopping;
+    assert.equal(deletes(f.s3).length, 1);
+    assert.equal(f.s3.objects.size, 1);
+    assert.equal(f.workspace.list()[0].state, "paused");
+    assert.equal(f.workspace.list()[0].cleanupState, "pending");
+    assert.equal(f.workspace.list()[0].error, null);
+    await f.workspace.close();
+    f.queue.db.close();
+    const { workspace } = f.reopen();
+    assert.equal(workspace.list()[0].state, "paused");
+    assert.equal(deletes(f.s3).length, 1);
+    f.s3.send = send;
+    await complete(workspace, id);
+    assert.equal(workspace.list()[0].cleanupState, "done");
+    assert.equal(deletes(f.s3).length, 2);
+    assert.equal(new Set(deletes(f.s3).map((r) => r.Key)).size, 2);
+    assert.equal(f.s3.objects.size, 0);
+  });
+}
+
+test("cancel aborts cleanup requests and persists cancellation across restart", async (t) => {
+  const f = await fixture(t);
+  f.s3.put("backup/second.txt");
+  const id = await syncJob(f, { upload: false });
+  const entered = deferred();
+  const send = f.s3.send.bind(f.s3);
+  let requestSignal,
+    attempted = 0;
+  f.s3.send = async (command, options) => {
+    if (command.constructor.name !== "DeleteObjectCommand")
+      return send(command);
+    attempted++;
+    requestSignal = options.abortSignal;
+    entered.resolve();
+    await new Promise((resolve, reject) =>
+      requestSignal.addEventListener(
+        "abort",
+        () => reject(requestSignal.reason),
+        { once: true },
+      ),
+    );
+  };
+  f.workspace.auto = true;
+  await f.workspace.start(id);
+  await entered.promise;
+  await f.workspace.cancel(id);
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(attempted, 1);
+  assert.equal(f.s3.objects.size, 2);
+  assert.equal(f.workspace.auto, false);
+  assert.equal(f.workspace.list()[0].state, "cancelled");
+  assert.equal(f.workspace.list()[0].cleanupState, "cancelled");
+  await f.workspace.close();
+  f.queue.db.close();
+  const { workspace } = f.reopen();
+  assert.equal(workspace.list()[0].state, "cancelled");
+  assert.throws(() => workspace.retry(id), /cancelled/);
+  await assert.rejects(workspace.start(id), /not ready/);
+  assert.equal(attempted, 1);
+});
+
+test("pause aborts cleanup HEAD preflight before any deletion", async (t) => {
+  const f = await fixture(t);
+  f.s3.put("backup/second.txt");
+  const id = await syncJob(f, { upload: false });
+  const entered = deferred();
+  const send = f.s3.send.bind(f.s3);
+  let heads = 0,
+    requestSignal;
+  f.s3.send = async (command, options) => {
+    if (command.constructor.name !== "HeadObjectCommand") return send(command);
+    heads++;
+    requestSignal = options.abortSignal;
+    entered.resolve();
+    await new Promise((resolve, reject) =>
+      requestSignal.addEventListener(
+        "abort",
+        () => reject(requestSignal.reason),
+        { once: true },
+      ),
+    );
+  };
+  await f.workspace.start(id);
+  await entered.promise;
+  await f.workspace.pause();
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(heads, 1);
+  assert.equal(deletes(f.s3).length, 0);
+  assert.equal(f.workspace.list()[0].cleanupState, "pending");
+  assert.equal(f.workspace.list()[0].state, "paused");
+  f.s3.send = send;
+  await complete(f.workspace, id);
+  assert.equal(deletes(f.s3).length, 2);
+});
+
+test("pause at upload completion prevents cleanup from starting", async (t) => {
+  const f = await fixture(t);
+  const id = await syncJob(f);
+  const start = f.queue.start.bind(f.queue);
+  let paused;
+  f.queue.start = async (...args) => {
+    await start(...args);
+    f.queue.running.finished.then(() => {
+      paused = f.workspace.pause();
+    });
+  };
+  await f.workspace.start(id);
+  await f.workspace.finishing;
+  await paused;
+  assert.equal(f.queue.list()[0].state, "complete");
+  assert.equal(f.workspace.list()[0].state, "paused");
+  assert.equal(f.workspace.list()[0].cleanupState, "pending");
+  assert.equal(deletes(f.s3).length, 0);
+});
+
+test("cancelling another queued batch leaves active cleanup running", async (t) => {
+  const f = await fixture(t);
+  const id = await syncJob(f, { upload: false });
+  const another = job(f.queue, "another");
+  const entered = deferred(),
+    release = deferred();
+  const send = f.s3.send.bind(f.s3);
+  let requestSignal;
+  f.s3.send = async (command, options) => {
+    if (command.constructor.name === "DeleteObjectCommand") {
+      requestSignal = options.abortSignal;
+      entered.resolve();
+      await release.promise;
+    }
+    return send(command);
+  };
+  await f.workspace.start(id);
+  await entered.promise;
+  try {
+    await f.workspace.cancel(another);
+    assert.equal(requestSignal.aborted, false);
+    assert.equal(
+      f.workspace.list().find((j) => j.id === another).state,
+      "cancelled",
+    );
+    assert.equal(
+      f.workspace.list().find((j) => j.id === id).cleanupState,
+      "running",
+    );
+  } finally {
+    release.resolve();
+    await f.workspace.finishing;
+  }
+  assert.equal(
+    f.workspace.list().find((j) => j.id === id).cleanupState,
+    "done",
+  );
+});

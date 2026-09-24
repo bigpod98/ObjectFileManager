@@ -6,9 +6,9 @@ A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, and custo
 
 ## Run
 
-The features below describe the current source. Existing **0.1.1 binaries have not been rebuilt for this expansion**; run from source to use the new workflows, or build fresh packages with the commands below.
+The features below describe the current source. Forgejo release tags build and publish **DEB, RPM, Arch and a portable archive for Linux x86_64 and ARM64** after validation. See [CI and release setup](packaging/README.md#forgejo-ci-and-releases) for runner requirements, version tags and publication credentials. Local files in `dist/` are build outputs; use the tagged release assets when installing a published version.
 
-Existing native Linux x86_64 packages are in `dist/native/`:
+Native Linux packages are built into `dist/native/`:
 
 | Distribution    | Package                                      | Install                                                                   |
 | --------------- | -------------------------------------------- | ------------------------------------------------------------------------- |
@@ -18,7 +18,9 @@ Existing native Linux x86_64 packages are in `dist/native/`:
 
 After installation, open **S3 Browser** from your application menu or run `s3-browser`. Your connections and transfer history stay in your user profile when the package is removed. See [packaging documentation](packaging/README.md) for build and validation details.
 
-A portable alternative is `dist/s3-browser-0.1.1-linux-x64.tar.gz`: extract it and open `s3-browser` inside the extracted folder. Keep its accompanying files together. In this workspace, `dist/linux-unpacked/s3-browser` can also be launched directly.
+The table shows x86_64 filenames; ARM64 builds use `arm64` for DEB and `aarch64` for RPM/Arch.
+
+A portable alternative is `dist/s3-browser-0.1.1-linux-x64.tar.gz`: extract it and open `s3-browser` inside the extracted folder (`linux-arm64.tar.gz` for ARM64). Keep its accompanying files together. In this workspace, `dist/linux-unpacked/s3-browser` can also be launched directly.
 
 To run from source, install Node.js 22.13 or later and a recent npm:
 
@@ -66,7 +68,7 @@ Operations recheck reviewed source snapshots and send conditional requests. A mo
 
 ## Object details and maintenance
 
-Click an object name to inspect its size, ETag, storage class, content type, and user metadata. Editing metadata replaces the whole user metadata map through server-side copy, while preserving object bytes and supported existing attributes. Review and confirm the replacement before saving.
+Click an object name to inspect its size, ETag, storage class, content type, and user metadata. Editing metadata replaces the whole user metadata map through server-side copy, while preserving object bytes and supported existing attributes. Review and confirm the replacement before saving. Saving checks a connection-bound snapshot of the displayed metadata and object headers; if another client changed the object while the editor was open, reopen its details and review again. S3 copy conditions guard the ETag, so a metadata-only write in the narrow interval between the final check and the copy cannot be excluded atomically.
 
 The same dialog can generate and copy an expiring download link, with a lifetime from one second to seven days. Anyone holding the link can download the object until it expires; temporary credentials may expire sooner. Version history supports pagination and restoring a selected data version as a new current version. Delete markers cannot be restored, and history requires provider support and bucket versioning.
 
@@ -78,9 +80,9 @@ Choose **Sync folder**, select a local folder, and inspect the comparison before
 
 The preview classifies new, changed, unchanged, remote-only, conflicting, and skipped paths. It reads local files to calculate checksums, compares sizes and supported full-object checksums or suitable single-part MD5 ETags, and treats uncertain equality as changed. Multipart ETags are not treated as file MD5 hashes. Symlinks and special files are skipped; remote paths overlapping skipped or conflicting local paths are protected from deletion.
 
-Remote deletion is **off by default**. Enabling it includes reviewed remote-only keys in the plan. Applying rechecks the local tree and remote snapshots, then creates a transfer batch for new and changed entries. Start that batch in **Transfers**. New keys use create-only conditions and replacements use the reviewed ETag, so changed remote targets fail instead of being overwritten unconditionally. Local source checks also run before upload; keep the source unchanged throughout the run.
+Remote deletion is **off by default**. Enabling it includes reviewed remote-only keys in the plan. Applying rechecks the local tree and remote snapshots, then creates a transfer batch for new and changed entries. Start that batch in **Transfers**. New keys use create-only conditions and replacements use the reviewed ETag, so changed remote targets fail instead of being overwritten unconditionally. Local source checks also run before upload; keep the source unchanged throughout the run. New sync uploads store an operation identifier and the intended SHA-256 in the `s3browser-upload-token` and `s3browser-sha256` user metadata fields. After an interrupted or ambiguous write, recovery requires that identifier, checksum, size, and a streamed SHA-256 of the remote bytes all match before accepting the upload as completed. Verification needs object read permission and can download the whole object. Older interrupted uploads without this evidence require a fresh comparison; an existing object alone is never treated as proof of success.
 
-Reviewed deletions run only after every queued upload succeeds. Before cleanup, the app checks the local tree and deletion targets again, then conditionally deletes matching remote objects. A failed upload prevents cleanup; changed sources or deletion targets stop cleanup. Sync plans and cleanup status survive restarts, and failed cleanup can be retried from **Transfers**. Sync is not a transaction: completed uploads and deletions are retained after later failures.
+Reviewed deletions run only after every queued upload succeeds. Before cleanup, the app checks the local tree and deletion targets again, then conditionally deletes matching remote objects. A failed upload prevents cleanup; changed sources or deletion targets stop cleanup. Sync plans and cleanup status survive restarts, and failed cleanup can be retried from **Transfers**. Pause and closing the app interrupt cleanup validation and remote requests, and prevent further deletions from starting. A deletion already accepted by the server may still complete. Resume skips already absent objects and continues with the remaining reviewed keys. Cancel stops the sync permanently; compare again to start a new sync. Sync is not a transaction: completed uploads and deletions are retained after later failures.
 
 ## Providers
 

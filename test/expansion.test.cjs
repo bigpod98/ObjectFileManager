@@ -235,9 +235,11 @@ test(
           ContentType: "text/plain",
           Metadata: { original: "old" },
         });
+        const reviewed = await objectTools.details(s3, { bucket, key });
         await objectTools.metadata(s3, {
           bucket,
           key,
+          expectedSnapshot: reviewed.metadataSnapshot,
           metadata: { reviewed: "yes", owner: "integration" },
           contentType: "application/json",
         });

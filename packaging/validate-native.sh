@@ -4,12 +4,12 @@ format=$1
 case "$format" in
   deb)
     apt-get update
-    apt-get install -y --no-install-recommends "/packages/s3-browser_${S3_PACKAGE_VERSION}-1_amd64.deb"
+    apt-get install -y --no-install-recommends "/packages/s3-browser_${S3_PACKAGE_VERSION}-1_${S3_DEB_ARCH}.deb"
     dpkg-query -W s3-browser
     dpkg --compare-versions "$S3_PACKAGE_VERSION-1" lt "$S3_PACKAGE_VERSION-2"
     ;;
   rpm)
-    dnf install -y "/packages/s3-browser-${S3_PACKAGE_VERSION}-1.x86_64.rpm"
+    dnf install -y "/packages/s3-browser-${S3_PACKAGE_VERSION}-1.${S3_NATIVE_ARCH}.rpm"
     rpm -V s3-browser
     test "$(rpm --eval '%{lua:print(rpm.vercmp("0.1.0-1", "0.1.0-2"))}')" = '-1'
     ;;
@@ -17,7 +17,7 @@ case "$format" in
     # The minimal Arch image excludes documentation; validate the full installed package.
     sed -i '/^NoExtract[[:space:]]*=/d' /etc/pacman.conf
     pacman -Syu --noconfirm
-    pacman -U --noconfirm "/packages/s3-browser-${S3_PACKAGE_VERSION}-1-x86_64.pkg.tar.zst"
+    pacman -U --noconfirm "/packages/s3-browser-${S3_PACKAGE_VERSION}-1-${S3_NATIVE_ARCH}.pkg.tar.zst"
     pacman -Qkk s3-browser
     test "$(vercmp "$S3_PACKAGE_VERSION-1" "$S3_PACKAGE_VERSION-2")" = '-1'
     ;;

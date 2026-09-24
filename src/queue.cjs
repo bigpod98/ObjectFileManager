@@ -1,7 +1,8 @@
 const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
+const { createReadStream } = require("node:fs");
 
 function abortError() {
   return Object.assign(new Error("Transfer aborted."), { name: "AbortError" });
@@ -118,7 +119,7 @@ class Queue {
     this.db = new DatabaseSync(file);
     this.transfer = transfer;
     this.running = null;
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, profile TEXT, bucket TEXT, prefix TEXT, state TEXT, created TEXT, concurrency INTEGER, overwrite INTEGER, warnings INTEGER DEFAULT 0, error TEXT);
       CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY, job TEXT, source TEXT, key TEXT, size INTEGER, mtime REAL, directory INTEGER, state TEXT DEFAULT 'pending', error TEXT, UNIQUE(job,key));
       CREATE INDEX IF NOT EXISTS entries_job_state ON entries(job,state,id);`);
@@ -144,6 +145,8 @@ class Queue {
       root: "TEXT",
       attempts: "INTEGER NOT NULL DEFAULT 0",
       expectedAbsent: "INTEGER NOT NULL DEFAULT 0",
+      sha256: "TEXT",
+      uploadToken: "TEXT",
     });
     this.db.exec(
       "UPDATE entries SET state='pending' WHERE state IN ('uploading','downloading','transferring'); UPDATE jobs SET state='paused' WHERE state='running'; UPDATE jobs SET state='failed', error='Folder scan was interrupted. Remove this batch and select the source again.' WHERE state='scanning'",
@@ -259,7 +262,7 @@ class Queue {
     const config = settings(options);
     const id = randomUUID();
     const insert = this.db.prepare(
-      "INSERT INTO entries(job,source,key,size,mtime,directory,etag,root,expectedAbsent) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO entries(job,source,key,size,mtime,directory,etag,root,expectedAbsent,sha256,uploadToken) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
     );
     this.db.exec("BEGIN");
     try {
@@ -312,6 +315,10 @@ class Queue {
           entry.etag ?? null,
           entry.root ?? null,
           +!!entry.expectedAbsent,
+          entry.sha256 ?? null,
+          kind === "upload" && (entry.expectedAbsent || entry.etag)
+            ? randomUUID()
+            : null,
         );
       }
       this.db.exec("COMMIT");
@@ -485,7 +492,30 @@ class Queue {
                 }
               }
             }
+            if (
+              job.kind === "upload" &&
+              (entry.expectedAbsent || entry.etag) &&
+              (!entry.sha256 || !entry.uploadToken)
+            ) {
+              // Older batches have no upload identity. Establish evidence before
+              // this attempt; never infer that an older untagged write succeeded.
+              if (!entry.sha256) {
+                const hash = createHash("sha256");
+                if (!entry.directory) {
+                  for await (const chunk of createReadStream(entry.source, {
+                    signal: controller.signal,
+                  }))
+                    hash.update(chunk);
+                }
+                entry.sha256 = hash.digest("base64");
+              }
+              entry.uploadToken ||= randomUUID();
+              this.db
+                .prepare("UPDATE entries SET sha256=?,uploadToken=? WHERE id=?")
+                .run(entry.sha256, entry.uploadToken, entry.id);
+            }
             attempt.run(entry.id);
+            entry.attempts++;
             let previous = 0;
             this.progress.get(entry.id).loaded = 0;
             try {

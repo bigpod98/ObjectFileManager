@@ -21,7 +21,8 @@ const identity = (stat) => ({
 });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-async function localTree(source, prefix) {
+async function localTree(source, prefix, signal) {
+  signal?.throwIfAborted();
   source = path.resolve(source);
   if ((await fs.realpath(source)) !== source)
     throw new Error(
@@ -33,7 +34,9 @@ async function localTree(source, prefix) {
     entries = [],
     skipped = [];
   async function walk(file, relative) {
+    signal?.throwIfAborted();
     const stat = await fs.lstat(file);
+    signal?.throwIfAborted();
     const before = identity(stat);
     const type = stat.isSymbolicLink()
       ? "symlink"
@@ -74,11 +77,14 @@ async function localTree(source, prefix) {
           sha1 = createHash("sha1");
         for await (const chunk of handle.createReadStream({
           autoClose: false,
+          signal,
         })) {
+          signal?.throwIfAborted();
           md5.update(chunk);
           sha256.update(chunk);
           sha1.update(chunk);
         }
+        signal?.throwIfAborted();
         record.sha256 = sha256.digest("base64");
         entry.sha256 = record.sha256;
         entry.md5 = md5.digest("hex");
@@ -100,10 +106,12 @@ async function localTree(source, prefix) {
       throw new Error(`Local source changed while comparing: ${file}`);
   }
   await walk(source, "");
+  signal?.throwIfAborted();
   return { source, snapshot, entries, skipped };
 }
 
-async function head(s3, bucket, key, checksum = false) {
+async function head(s3, bucket, key, checksum = false, signal) {
+  signal?.throwIfAborted();
   try {
     let result;
     try {
@@ -113,8 +121,10 @@ async function head(s3, bucket, key, checksum = false) {
           Key: key,
           ...(checksum ? { ChecksumMode: "ENABLED" } : {}),
         }),
+        { abortSignal: signal },
       );
     } catch (error) {
+      signal?.throwIfAborted();
       if (
         !checksum ||
         !(
@@ -127,8 +137,10 @@ async function head(s3, bucket, key, checksum = false) {
         throw error;
       result = await s3.send(
         new HeadObjectCommand({ Bucket: bucket, Key: key }),
+        { abortSignal: signal },
       );
     }
+    signal?.throwIfAborted();
     return {
       key,
       size: result.ContentLength,
@@ -141,6 +153,7 @@ async function head(s3, bucket, key, checksum = false) {
       encryption: result.ServerSideEncryption,
     };
   } catch (error) {
+    signal?.throwIfAborted();
     if (missing(error)) return null;
     throw error;
   }
@@ -385,36 +398,45 @@ async function compare(
   };
 }
 
-async function validate(plan, s3) {
-  const current = await localTree(plan.source, plan.prefix);
+async function validate(plan, s3, signal) {
+  const current = await localTree(plan.source, plan.prefix, signal);
+  signal?.throwIfAborted();
   if (!same(current.snapshot, plan.localSnapshot))
     throw new Error(
       "Local folder contents changed since the sync preview. Compare again before applying or deleting remote objects.",
     );
   if (s3) {
     for (const snapshot of plan.remoteSnapshot || []) {
-      const currentRemote = await head(s3, plan.bucket, snapshot.key);
+      const currentRemote = await head(
+        s3,
+        plan.bucket,
+        snapshot.key,
+        false,
+        signal,
+      );
       const expected = snapshot.exists ? snapshotOf(snapshot) : null;
       if (!same(snapshotOf(currentRemote), expected))
         throw new Error(
           `Remote object changed since the sync preview: ${snapshot.key}. Compare again.`,
         );
     }
-    await validateDeletions(s3, plan);
+    await validateDeletions(s3, plan, signal);
   }
   return true;
 }
 
-async function validateDeletions(s3, plan) {
+async function validateDeletions(s3, plan, signal) {
+  signal?.throwIfAborted();
   const remaining = [];
   for (const snapshot of plan.deletions || []) {
+    signal?.throwIfAborted();
     if (
       !snapshot.etag ||
       !snapshot.key.startsWith(plan.prefix) ||
       snapshot.key === plan.prefix
     )
       throw new Error("Invalid remote deletion snapshot. Compare again.");
-    const current = await head(s3, plan.bucket, snapshot.key);
+    const current = await head(s3, plan.bucket, snapshot.key, false, signal);
     if (!current) continue; // Safe to retry after a crash or partial cleanup.
     if (!same(snapshotOf(current), snapshotOf(snapshot)))
       throw new Error(
@@ -425,13 +447,14 @@ async function validateDeletions(s3, plan) {
   return remaining;
 }
 
-async function executeDeletions(s3, plan) {
-  await validate(plan);
+async function executeDeletions(s3, plan, signal) {
+  await validate(plan, undefined, signal);
   // Complete preflight before making the first destructive request.
-  const remaining = await validateDeletions(s3, plan);
+  const remaining = await validateDeletions(s3, plan, signal);
   const failures = [];
   let deleted = (plan.deletions || []).length - remaining.length;
   for (const snapshot of remaining) {
+    signal?.throwIfAborted();
     try {
       // Conditional deletion must not fall back to an unconditional request.
       await s3.send(
@@ -440,13 +463,16 @@ async function executeDeletions(s3, plan) {
           Key: snapshot.key,
           IfMatch: snapshot.etag,
         }),
+        { abortSignal: signal },
       );
       deleted++;
     } catch (error) {
+      signal?.throwIfAborted();
       if (missing(error)) deleted++;
       else failures.push({ key: snapshot.key, error: error.message });
     }
   }
+  signal?.throwIfAborted();
   return { deleted, failures };
 }
 

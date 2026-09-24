@@ -329,3 +329,48 @@ test("apply refuses a newly created remote destination and retains objects witho
   s3.state.set("fresh", { ContentLength: 5, ETag: md5("other") });
   await assert.rejects(validate(plan, s3), /Remote object changed/);
 });
+
+test("an already aborted cleanup performs no local validation or remote requests", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const s3 = remote({ extra: "remote" });
+  await assert.rejects(
+    executeDeletions(s3, { source: "/does-not-exist" }, controller.signal),
+    { name: "AbortError" },
+  );
+  assert.deepEqual(s3.calls, []);
+});
+
+test("cleanup can be interrupted while hashing local files before preflight", async (t) => {
+  const root = await source(t, { large: Buffer.alloc(1024 * 1024, "a") });
+  const s3 = remote({ extra: "remote" });
+  const plan = await compare(s3, {
+    bucket: "b",
+    source: root,
+    deleteRemote: true,
+  });
+  s3.calls.length = 0;
+  const controller = new AbortController();
+  const open = fs.open.bind(fs);
+  let interrupted = false;
+  t.mock.method(fs, "open", async (...args) => {
+    const handle = await open(...args);
+    const createReadStream = handle.createReadStream.bind(handle);
+    handle.createReadStream = (options) => {
+      assert.equal(options.signal, controller.signal);
+      const stream = createReadStream(options);
+      stream.once("data", () => {
+        interrupted = true;
+        controller.abort();
+      });
+      return stream;
+    };
+    return handle;
+  });
+  await assert.rejects(executeDeletions(s3, plan, controller.signal), {
+    name: "AbortError",
+  });
+  assert.equal(interrupted, true);
+  assert.deepEqual(s3.calls, []);
+  assert.ok(s3.state.has("extra"));
+});

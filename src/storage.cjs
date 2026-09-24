@@ -11,6 +11,7 @@ const { Upload } = require("@aws-sdk/lib-storage");
 const { createReadStream, createWriteStream } = require("node:fs");
 const { pipeline } = require("node:stream/promises");
 const { Transform } = require("node:stream");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs/promises");
 const mime = require("mime-types");
 function client(profile) {
@@ -52,8 +53,75 @@ async function browse(s3, bucket, prefix, token) {
     token: r.NextContinuationToken || null,
   };
 }
+// Metadata identifies this durable queue operation, while hashing the returned
+// body proves that copied metadata or a concurrent write did not change bytes.
+async function reconcileUpload(s3, job, entry, signal) {
+  let result;
+  try {
+    result = await s3.send(
+      new GetObjectCommand({ Bucket: job.bucket, Key: entry.key }),
+      { abortSignal: signal },
+    );
+  } catch (error) {
+    if (error.$metadata?.httpStatusCode === 404 || error.name === "NoSuchKey")
+      return false;
+    throw error;
+  }
+  try {
+    if (
+      result.Metadata?.["s3browser-upload-token"] !== entry.uploadToken ||
+      result.Metadata?.["s3browser-sha256"] !== entry.sha256 ||
+      result.ContentLength !== entry.size
+    )
+      return false;
+    if (!result.Body || !result.Body[Symbol.asyncIterator])
+      throw new Error(
+        "Cannot verify the previous upload: object body unavailable.",
+      );
+    const hash = createHash("sha256");
+    let size = 0;
+    for await (const chunk of result.Body) {
+      signal.throwIfAborted();
+      if (job.throttle) await job.throttle(chunk.length, signal);
+      hash.update(chunk);
+      size += chunk.length;
+    }
+    signal.throwIfAborted();
+    return size === entry.size && hash.digest("base64") === entry.sha256;
+  } finally {
+    result.Body?.destroy?.();
+  }
+}
 async function transfer(s3, job, entry, signal, onProgress) {
-  if (!job.overwrite) {
+  const recoverable = !!(
+    (entry.expectedAbsent || entry.etag) &&
+    entry.uploadToken &&
+    entry.sha256
+  );
+  if (
+    recoverable &&
+    entry.attempts > 1 &&
+    (await reconcileUpload(s3, job, entry, signal))
+  )
+    return;
+  try {
+    return await uploadObject(s3, job, entry, signal, onProgress);
+  } catch (error) {
+    // A lost PutObject/CompleteMultipartUpload reply can be followed by a 412
+    // even during the SDK's own retries. A matching verified object is the
+    // only success evidence; permission/read failures must remain failures.
+    if (
+      recoverable &&
+      !signal.aborted &&
+      (await reconcileUpload(s3, job, entry, signal))
+    )
+      return;
+    throw error;
+  }
+}
+async function uploadObject(s3, job, entry, signal, onProgress) {
+  const skipExisting = !job.overwrite && !entry.expectedAbsent && !entry.etag;
+  if (skipExisting) {
     try {
       await s3.send(
         new HeadObjectCommand({ Bucket: job.bucket, Key: entry.key }),
@@ -66,12 +134,25 @@ async function transfer(s3, job, entry, signal, onProgress) {
   }
   if (signal.aborted) throw new Error("Paused");
   const condition =
-    entry.expectedAbsent || !job.overwrite
+    entry.expectedAbsent || skipExisting
       ? { IfNoneMatch: "*" }
       : entry.etag
         ? { IfMatch: entry.etag }
         : {};
+  const metadata =
+    entry.uploadToken && entry.sha256
+      ? {
+          Metadata: {
+            "s3browser-upload-token": entry.uploadToken,
+            "s3browser-sha256": entry.sha256,
+          },
+        }
+      : {};
   if (entry.directory) {
+    if (entry.sha256 && entry.sha256 !== createHash("sha256").digest("base64"))
+      throw new Error(
+        "Source content changed since scanning. Create a new batch.",
+      );
     await s3.send(
       new PutObjectCommand({
         Bucket: job.bucket,
@@ -80,21 +161,40 @@ async function transfer(s3, job, entry, signal, onProgress) {
         ContentLength: 0,
         ContentType: "application/x-directory",
         ...condition,
+        ...metadata,
       }),
       { abortSignal: signal },
     );
     return;
   }
   const source = createReadStream(entry.source);
-  const limiter = job.throttle
-    ? new Transform({
-        transform(chunk, encoding, callback) {
-          job
-            .throttle(chunk.length, signal)
-            .then(() => callback(null, chunk), callback);
-        },
-      })
-    : null;
+  const hash = entry.sha256 ? createHash("sha256") : null;
+  let size = 0;
+  const limiter =
+    job.throttle || hash
+      ? new Transform({
+          transform(chunk, encoding, callback) {
+            hash?.update(chunk);
+            size += chunk.length;
+            Promise.resolve(job.throttle?.(chunk.length, signal)).then(
+              () => callback(null, chunk),
+              callback,
+            );
+          },
+          flush(callback) {
+            if (
+              hash &&
+              (size !== entry.size || hash.digest("base64") !== entry.sha256)
+            )
+              callback(
+                new Error(
+                  "Source content changed since scanning. Create a new batch.",
+                ),
+              );
+            else callback();
+          },
+        })
+      : null;
   const body = limiter ? source.pipe(limiter) : source;
   const onSourceError = (error) => body.destroy(error);
   if (limiter) source.on("error", onSourceError);
@@ -119,6 +219,7 @@ async function transfer(s3, job, entry, signal, onProgress) {
       ContentLength: entry.size,
       ContentType: mime.lookup(entry.key) || "application/octet-stream",
       ...condition,
+      ...metadata,
     },
     queueSize: 1,
     partSize: Math.max(8 * 1024 * 1024, Math.ceil(entry.size / 10000)),
@@ -133,7 +234,7 @@ async function transfer(s3, job, entry, signal, onProgress) {
   try {
     await upload.done();
   } catch (e) {
-    if (!job.overwrite && e.$metadata?.httpStatusCode === 412) return "skipped";
+    if (skipExisting && e.$metadata?.httpStatusCode === 412) return "skipped";
     throw e;
   } finally {
     signal.removeEventListener("abort", abort);

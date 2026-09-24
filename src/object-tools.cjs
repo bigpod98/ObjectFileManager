@@ -6,9 +6,35 @@ const {
   ListMultipartUploadsCommand,
   AbortMultipartUploadCommand,
 } = require("@aws-sdk/client-s3");
+const { createHmac, randomBytes, timingSafeEqual } = require("node:crypto");
 
 const PAGE_SIZE = 500;
 const SEARCH_PAGES = 5;
+const snapshotSecrets = new WeakMap();
+
+function canonical(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .filter((key) => value[key] !== undefined)
+        .map((key) => [key, canonical(value[key])]),
+    );
+  return value;
+}
+
+function metadataSnapshot(s3, { profile, bucket, key }, head) {
+  if (!snapshotSecrets.has(s3)) snapshotSecrets.set(s3, randomBytes(32));
+  // Bind the reviewed response to this connection and object, including every
+  // returned attribute except per-request SDK diagnostics. ETags alone do not
+  // detect metadata-only changes. Recreating a connection invalidates its tokens.
+  const { $metadata, ...attributes } = head;
+  return createHmac("sha256", snapshotSecrets.get(s3))
+    .update(JSON.stringify(canonical({ profile, bucket, key, attributes })))
+    .digest("hex");
+}
 
 function required(value, label) {
   if (typeof value !== "string" || !value.length)
@@ -117,6 +143,7 @@ async function details(s3, options) {
   return operation("Object details", async () => {
     const head = await s3.send(new HeadObjectCommand(input));
     return {
+      metadataSnapshot: metadataSnapshot(s3, options, head),
       key: options.key,
       size: head.ContentLength,
       etag: head.ETag,
@@ -233,7 +260,14 @@ async function restore(s3, { bucket, key, versionId }) {
   });
 }
 
-async function metadata(s3, { bucket, key, metadata: values, contentType }) {
+async function metadata(s3, options) {
+  const {
+    bucket,
+    key,
+    metadata: values,
+    contentType,
+    expectedSnapshot,
+  } = options;
   const input = objectArgs({ bucket, key });
   if (!values || typeof values !== "object" || Array.isArray(values))
     throw new Error("Metadata must be an object of text keys and values.");
@@ -259,8 +293,25 @@ async function metadata(s3, { bucket, key, metadata: values, contentType }) {
       /[\r\n]/.test(contentType))
   )
     throw new Error("Content type must be nonempty text without line breaks.");
+  if (
+    typeof expectedSnapshot !== "string" ||
+    !/^[a-f0-9]{64}$/.test(expectedSnapshot)
+  )
+    throw new Error("Refresh object details before editing metadata.");
   return operation("Metadata editing", async () => {
     const head = await s3.send(new HeadObjectCommand(input));
+    if (
+      !timingSafeEqual(
+        Buffer.from(expectedSnapshot, "hex"),
+        Buffer.from(metadataSnapshot(s3, options, head), "hex"),
+      )
+    )
+      throw new Error(
+        "Metadata editing stopped because the object changed or its connection changed. Refresh object details and review your edits again.",
+      );
+    // S3's copy preconditions guard ETags, not arbitrary metadata or destination
+    // version IDs. This review check detects changes before HEAD; a same-ETag
+    // write between HEAD and copy cannot be excluded atomically by that API.
     const { copyObject } = require("./operations.cjs");
     const result = await copyObject(s3, {
       bucket,

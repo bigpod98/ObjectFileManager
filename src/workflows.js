@@ -354,7 +354,12 @@ async function openObject(key) {
           throw Error("Metadata must be a JSON object with string values.");
         const contentType = $("#object-content-type").value.trim();
         if (!contentType) throw Error("Enter a content type.");
-        await api["objects:metadata"]({ ...ctx, metadata, contentType });
+        await api["objects:metadata"]({
+          ...ctx,
+          metadata,
+          contentType,
+          expectedSnapshot: info.metadataSnapshot,
+        });
         toast("Metadata saved.");
         await openObject(key);
       },

@@ -19,8 +19,9 @@ try:
     time.sleep(1)
     # Container-only sandbox override: nested Chromium namespaces are blocked by Docker.
     # Installed launchers never include this flag.
-    app = subprocess.Popen(['runuser', '-u', 'tester', '--', 'env', 'DISPLAY=:99', '/usr/bin/s3-browser', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', f'--user-data-dir={profile}'], stdout=log, stderr=log, start_new_session=True)
-    deadline = time.monotonic() + 40
+    emulation_flags = ['--no-zygote', '--in-process-gpu'] if os.environ.get('S3_EMULATED') == '1' else []
+    app = subprocess.Popen(['runuser', '-u', 'tester', '--', 'env', 'DISPLAY=:99', '/usr/bin/s3-browser', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', f'--user-data-dir={profile}'] + emulation_flags, stdout=log, stderr=log, start_new_session=True)
+    deadline = time.monotonic() + int(os.environ.get("S3_SMOKE_TIMEOUT", "40"))
     result = None
     while time.monotonic() < deadline:
         if app.poll() is not None:

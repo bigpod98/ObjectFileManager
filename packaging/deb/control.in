@@ -1,6 +1,6 @@
 Package: s3-browser
 Version: @VERSION@-1
-Architecture: amd64
+Architecture: @DEB_ARCH@
 Maintainer: Primož Ajdišek <bigpod@bigpod.si>
 Section: utils
 Priority: optional
