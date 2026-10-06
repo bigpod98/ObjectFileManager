@@ -3,6 +3,7 @@ const channels = [
   "init",
   "connection:add",
   "connection:remove",
+  "connection:refresh-swift",
   "buckets",
   "browse",
   "scan",

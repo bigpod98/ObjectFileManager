@@ -2,6 +2,7 @@ const fs = require("node:fs/promises");
 const { constants } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { requireCapability } = require("./provider-capabilities.cjs");
 const {
   ListObjectsV2Command,
   HeadObjectCommand,
@@ -149,6 +150,7 @@ async function head(s3, bucket, key, checksum = false, signal) {
       versionId: result.VersionId || null,
       checksumSHA256: result.ChecksumSHA256,
       checksumSHA1: result.ChecksumSHA1,
+      checksumMD5: result.ChecksumMD5,
       checksumType: result.ChecksumType,
       encryption: result.ServerSideEncryption,
     };
@@ -238,6 +240,11 @@ function comparison(local, remote) {
       return local.sha1 === remote.checksumSHA1
         ? ["unchanged", "Full-object SHA-1 matches."]
         : ["changed", "Full-object SHA-1 differs."];
+    if (remote.checksumMD5)
+      return Buffer.from(local.md5, "hex").toString("base64") ===
+        remote.checksumMD5
+        ? ["unchanged", "Full-object MD5 matches."]
+        : ["changed", "Full-object MD5 differs."];
   }
   const etag = (remote.etag || "").replace(/^"|"$/g, "");
   if (
@@ -257,6 +264,8 @@ async function compare(
   s3,
   { profile, bucket, prefix = "", source, deleteRemote = false },
 ) {
+  if (deleteRemote)
+    requireCapability(s3, "conditionalDelete", "Reviewed sync deletion");
   if (!bucket || !source)
     throw new Error("Choose a bucket and a local folder.");
   if (prefix && !prefix.endsWith("/")) prefix += "/";
@@ -399,6 +408,8 @@ async function compare(
 }
 
 async function validate(plan, s3, signal) {
+  if (s3 && plan.entries?.some((entry) => entry.etag))
+    requireCapability(s3, "conditionalWrite", "Sync replacements");
   const current = await localTree(plan.source, plan.prefix, signal);
   signal?.throwIfAborted();
   if (!same(current.snapshot, plan.localSnapshot))
@@ -426,6 +437,8 @@ async function validate(plan, s3, signal) {
 }
 
 async function validateDeletions(s3, plan, signal) {
+  if (plan.deletions?.length)
+    requireCapability(s3, "conditionalDelete", "Reviewed sync deletion");
   signal?.throwIfAborted();
   const remaining = [];
   for (const snapshot of plan.deletions || []) {

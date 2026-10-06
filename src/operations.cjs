@@ -12,6 +12,12 @@ const {
 } = require("@aws-sdk/client-s3");
 
 const GiB = 1024 ** 3;
+const { requireCapability } = require("./provider-capabilities.cjs");
+function checkOperation(s3, action) {
+  if (action !== "delete") requireCapability(s3, "copy", "Reviewed copy");
+  if (action !== "copy")
+    requireCapability(s3, "conditionalDelete", "Reviewed deletion and move");
+}
 const attributesToPreserve = [
   "Metadata",
   "ContentType",
@@ -97,6 +103,7 @@ async function preview(
 ) {
   if (!["copy", "move", "delete"].includes(action))
     throw new Error("Unknown object operation.");
+  checkOperation(s3, action);
   if (!bucket || !Array.isArray(selection) || !selection.length)
     throw new Error("Select at least one object or folder.");
   sourcePrefix = prefixOf(sourcePrefix);
@@ -210,7 +217,7 @@ async function copyObject(
     ? { IfMatch: destinationEtag }
     : { IfNoneMatch: "*" };
   const source = { CopySource: copySource, CopySourceIfMatch: etag };
-  if (size <= 5 * GiB) {
+  if (typeof s3.upload === "function" || size <= 5 * GiB) {
     const result = await s3.send(
       new CopyObjectCommand({
         ...target,
@@ -307,6 +314,7 @@ async function execute(s3, plan) {
     !Array.isArray(plan.items)
   )
     throw new Error("Invalid operation preview.");
+  checkOperation(s3, plan.action);
   const result = {
     action: plan.action,
     total: plan.items.length,

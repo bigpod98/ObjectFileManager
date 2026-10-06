@@ -16,6 +16,7 @@ const duration = (seconds) =>
       : `${(seconds / 3600).toFixed(1)}h`;
 let workflowGeneration = 0;
 let objectGeneration = 0;
+const supports = (feature) => state.profile?.capabilities?.[feature] !== false;
 function workflow(title, html) {
   workflowGeneration++;
   $("#workflow-title").textContent = title;
@@ -67,6 +68,17 @@ function renderSelection() {
   $("#selection-count").textContent = `${count} selected`;
   for (const name of ["download", "copy", "move", "delete"])
     $("#bulk-" + name).disabled = !count;
+  for (const [name, capability] of [
+    ["copy", "copy"],
+    ["move", "conditionalDelete"],
+    ["delete", "conditionalDelete"],
+  ]) {
+    const button = $("#bulk-" + name);
+    button.disabled ||= !supports(capability);
+    button.title = supports(capability)
+      ? ""
+      : "This provider cannot safely perform this reviewed operation.";
+  }
   const rows = state.visibleRows || [];
   const selected = rows.filter((row) => state.selection.has(row.key)).length;
   $("#select-all").disabled = !rows.length;
@@ -79,6 +91,7 @@ function renderSelection() {
     "bookmark",
   ])
     $("#" + name).disabled = !state.bucket;
+  $("#multipart-open").hidden = !supports("multipart");
 }
 $("#select-all").onchange = () => {
   for (const row of state.visibleRows || []) {
@@ -314,6 +327,11 @@ $("#sync-open").onclick = () => {
       "Review folder sync",
       `<p class="destination">${esc(plan.source)} → ${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${uploads.length} uploads · ${deletions.length} remote deletions</p><div class="review-list">${(plan.rows || []).map((row) => `<div class="detail-row"><b>${esc(row.key)}</b><small>${esc(row.status)} · ${esc(row.reason || "")}</small></div>`).join("")}</div>${deletions.length ? '<p class="warning">The remote deletions shown above are included in this sync.</p>' : ""}<div class="modal-footer"><button id="sync-apply" class="primary" ${uploads.length || deletions.length ? "" : "disabled"}>Confirm & queue sync</button></div>`,
     );
+    if (!supports("conditionalWrite") && uploads.some((entry) => entry.etag)) {
+      $("#sync-apply").disabled = true;
+      $("#workflow-error").textContent =
+        "This provider cannot safely replace reviewed objects. Sync can add new objects, but this plan includes replacements. Ordinary uploads offer explicit replace mode.";
+    }
     modalAction("#sync-apply", async () => {
       await api["sync:apply"](token);
       $("#workflow-dialog").close();
@@ -322,6 +340,14 @@ $("#sync-open").onclick = () => {
       toast("Sync queued. Start the reviewed batch in Transfers.");
     });
   });
+  $("#sync-delete").disabled = !supports("conditionalDelete");
+  if (!supports("conditionalDelete"))
+    $("#sync-delete")
+      .closest("label")
+      .insertAdjacentHTML(
+        "afterend",
+        '<p class="form-note">This provider does not support guarded remote deletion. Sync can add new objects; reviewed replacements may also be unavailable.</p>',
+      );
 };
 async function openObject(key) {
   const ctx = { ...locationContext(), key };
@@ -333,7 +359,33 @@ async function openObject(key) {
     const info = await api["objects:details"](ctx);
     if (generation !== objectGeneration || !$("#object-dialog").open) return;
     $("#object-body").innerHTML =
-      `<p class="destination">${esc(ctx.bucket)}/${esc(key)}</p><dl class="object-facts"><dt>Size</dt><dd>${bytes(info.size)}</dd><dt>Modified</dt><dd>${esc(info.modified ? new Date(info.modified).toLocaleString() : "—")}</dd><dt>ETag</dt><dd>${esc(info.etag || "—")}</dd><dt>Version</dt><dd>${esc(info.versionId || "—")}</dd><dt>Storage class</dt><dd>${esc(info.storageClass || "Standard")}</dd></dl><details><summary>Edit metadata</summary><label>Content type<input id="object-content-type" value="${esc(info.contentType || "application/octet-stream")}" /></label><label>User metadata (JSON object)<textarea id="object-metadata" rows="5" spellcheck="false">${esc(JSON.stringify(info.metadata || {}, null, 2))}</textarea></label><p class="form-note">Saving replaces the user metadata map and rewrites the object with server-side copy.</p><label class="inline-check"><input id="metadata-confirm" type="checkbox" /> I reviewed the replacement metadata</label><button id="metadata-save">Save metadata</button></details><details><summary>Temporary download link</summary><label>Expires in seconds<input id="url-expiry" type="number" min="1" max="604800" value="3600" /></label><button id="url-create">Generate link</button><label id="url-result-label" hidden>Anyone with this link can download until it expires<input id="url-result" readonly /></label><button id="url-copy" hidden>Copy link</button></details><details><summary>Object versions</summary><p class="form-note">Restoring copies a selected version to a new current version. Delete markers cannot be restored.</p><button id="versions-load">Load versions</button><div id="versions-list"></div><button id="versions-more" hidden>Load more versions</button></details>`;
+      `<p class="destination">${esc(ctx.bucket)}/${esc(key)}</p><dl class="object-facts"><dt>Size</dt><dd>${bytes(info.size)}</dd><dt>Modified</dt><dd>${esc(info.modified ? new Date(info.modified).toLocaleString() : "—")}</dd><dt>ETag</dt><dd>${esc(info.etag || "—")}</dd><dt>Version</dt><dd>${esc(info.versionId || "—")}</dd><dt>Storage class</dt><dd>${esc(info.storageClass || "Standard")}</dd></dl><details><summary>Edit metadata</summary><label>Content type<input id="object-content-type" value="${esc(info.contentType || "application/octet-stream")}" /></label><label>User metadata (JSON object)<textarea id="object-metadata" rows="5" spellcheck="false">${esc(JSON.stringify(info.metadata || {}, null, 2))}</textarea></label><p class="form-note">Saving replaces the user metadata map while preserving object bytes. Azure transfers the object through this device.</p><label class="inline-check"><input id="metadata-confirm" type="checkbox" /> I reviewed the replacement metadata</label><button id="metadata-save">Save metadata</button></details><details><summary>Temporary download link</summary><label>Expires in seconds<input id="url-expiry" type="number" min="1" max="604800" value="3600" /></label><button id="url-create">Generate link</button><label id="url-result-label" hidden>Anyone with this link can download until it expires<input id="url-result" readonly /></label><button id="url-copy" hidden>Copy link</button></details><details><summary>Object versions</summary><p class="form-note">Restoring copies a selected version to a new current version. Delete markers cannot be restored.</p><button id="versions-load">Load versions</button><div id="versions-list"></div><button id="versions-more" hidden>Load more versions</button></details>`;
+    for (const [selector, feature, reason] of [
+      [
+        "#metadata-save",
+        "metadata",
+        "This provider cannot safely replace reviewed metadata.",
+      ],
+      [
+        "#versions-load",
+        "versions",
+        "Version browsing is unavailable for this provider.",
+      ],
+      [
+        "#url-create",
+        "signedUrl",
+        "Configure a Swift TempURL key in a new connection to generate temporary links.",
+      ],
+    ]) {
+      const button = $(selector);
+      if (!supports(feature)) {
+        button.disabled = true;
+        const note = document.createElement("p");
+        note.className = "form-note";
+        note.textContent = reason;
+        button.before(note);
+      }
+    }
     modalAction(
       "#metadata-save",
       async () => {

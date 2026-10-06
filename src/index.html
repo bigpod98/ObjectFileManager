@@ -63,15 +63,16 @@
           </div>
           <h2>Meet your new storage workspace.</h2>
           <p>
-            Connect Amazon S3, Cloudflare R2, Ceph, MinIO,<br />or any service
-            with an S3-compatible API.
+            Connect S3-compatible storage, OpenStack Swift,<br />Azure Blob
+            Storage, or Google Cloud Storage.
           </p>
           <button class="primary" id="connect-first">
             + Connect your storage
           </button>
           <div class="provider-pills">
             <span>Amazon S3</span><span>Cloudflare R2</span><span>Ceph</span
-            ><span>MinIO</span><span>Custom S3</span>
+            ><span>MinIO</span><span>Swift</span><span>Azure Blob</span
+            ><span>Google Cloud</span>
           </div>
           <div class="features">
             <div>
@@ -104,11 +105,14 @@
               <b id="connection-name"></b><small id="endpoint-label"></small>
             </div>
             <span id="provider-label" class="provider-label"></span
-            ><button class="subtle" id="forget">Remove connection</button>
+            ><button class="subtle" id="refresh-swift" hidden>
+              Refresh Swift token
+            </button>
+            <button class="subtle" id="forget">Remove connection</button>
           </div>
           <div class="bucket-bar">
             <label
-              >BUCKET
+              ><span id="bucket-label">BUCKET</span>
               <select id="bucket-select" aria-label="Choose bucket">
                 <option value="">Select a bucket</option>
               </select></label
@@ -118,7 +122,7 @@
                 id="direct-bucket"
                 placeholder="Or enter a bucket name"
                 aria-label="Bucket name"
-              /><button type="submit">Open bucket →</button>
+              /><button id="open-bucket" type="submit">Open bucket →</button>
             </form>
           </div>
           <form id="prefix-form" class="prefix-bar">
@@ -236,6 +240,9 @@
             <option>MinIO</option>
             <option>Amazon S3</option>
             <option>Custom S3</option>
+            <option>OpenStack Swift</option>
+            <option>Azure Blob Storage</option>
+            <option>Google Cloud Storage</option>
           </select></label
         >
         <label
@@ -244,8 +251,10 @@
             required
             placeholder="e.g. Personal backups"
         /></label>
-        <label
-          >Endpoint URL<input
+        <p class="form-note" id="provider-help"></p>
+        <label id="endpoint-field"
+          ><span id="endpoint-title">Endpoint URL</span
+          ><input
             name="endpoint"
             id="endpoint"
             type="url"
@@ -255,35 +264,84 @@
           ></label
         >
         <div class="form-grid">
-          <label
+          <label data-provider-fields="s3"
             >Region<input
               name="region"
               id="region"
               value="auto"
               required /></label
           ><label
-            >Default bucket <span class="muted">(optional)</span
-            ><input name="bucket" placeholder="my-bucket"
+            ><span id="default-bucket-label">Default bucket (optional)</span>
+            <input name="bucket" id="default-bucket" placeholder="my-bucket"
           /></label>
         </div>
-        <label
-          >Access key ID<input
-            name="accessKeyId"
-            required
-            autocomplete="off"
-            spellcheck="false" /></label
-        ><label
-          >Secret access key<input
-            name="secretAccessKey"
-            type="password"
-            required
-            autocomplete="off" /></label
-        ><label
-          >Session token <span class="muted">(optional)</span
-          ><input name="sessionToken" type="password" autocomplete="off"
-        /></label>
-        <div class="checks">
+        <div data-provider-fields="s3">
           <label
+            >Access key ID<input
+              name="accessKeyId"
+              required
+              autocomplete="off"
+              spellcheck="false" /></label
+          ><label
+            >Secret access key<input
+              name="secretAccessKey"
+              type="password"
+              required
+              autocomplete="off" /></label
+          ><label
+            >Session token <span class="muted">(optional)</span
+            ><input name="sessionToken" type="password" autocomplete="off"
+          /></label>
+        </div>
+        <div data-provider-fields="swift" hidden>
+          <label
+            >Authentication token<input
+              name="swiftToken"
+              type="password"
+              autocomplete="off"
+              data-required
+          /></label>
+          <label
+            >TempURL key
+            <span class="muted">(optional, for download links)</span
+            ><input name="swiftTempUrlKey" type="password" autocomplete="off"
+          /></label>
+        </div>
+        <div data-provider-fields="azure" hidden>
+          <label
+            >Storage account name<input
+              name="accountName"
+              autocomplete="off"
+              spellcheck="false"
+              data-required
+          /></label>
+          <label
+            >Account key<input
+              name="accountKey"
+              type="password"
+              autocomplete="off"
+              data-required
+          /></label>
+        </div>
+        <div data-provider-fields="gcs" hidden>
+          <label
+            >Service account JSON key<textarea
+              name="serviceAccountJson"
+              rows="5"
+              autocomplete="off"
+              spellcheck="false"
+              data-required
+              placeholder="Paste the service account JSON key"
+            ></textarea>
+          </label>
+          <label
+            >Project ID
+            <span class="muted">(optional, defaults to the key’s project)</span
+            ><input name="projectId" autocomplete="off" spellcheck="false"
+          /></label>
+        </div>
+        <div class="checks">
+          <label data-provider-fields="s3"
             ><input type="checkbox" name="pathStyle" id="path-style" /> Use
             path-style addressing</label
           ><label
@@ -299,11 +357,45 @@
         </div>
       </form>
     </dialog>
+    <dialog id="swift-token-dialog">
+      <form id="swift-token-form">
+        <div class="modal-heading">
+          <h2>Refresh Swift token</h2>
+          <button
+            type="button"
+            class="close"
+            data-close="swift-token-dialog"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <p class="form-note" id="swift-token-connection"></p>
+        <p class="form-note">
+          Paste a fresh authentication token for the same Swift account. Pause
+          this connection’s active transfers first. Your saved locations and
+          queued batches keep using this connection.
+        </p>
+        <label
+          >New authentication token<input
+            id="swift-token"
+            name="token"
+            type="password"
+            required
+            autocomplete="off"
+        /></label>
+        <div class="form-error" id="swift-token-error" role="alert"></div>
+        <div class="modal-footer">
+          <button type="button" data-close="swift-token-dialog">Cancel</button>
+          <button class="primary" type="submit">Update token</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="upload-dialog">
       <form id="upload-form">
         <div class="modal-heading">
           <div>
-            <h2>Upload to your bucket</h2>
+            <h2 id="upload-title">Upload to your bucket</h2>
           </div>
           <button
             type="button"
