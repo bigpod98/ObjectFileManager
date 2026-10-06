@@ -75,6 +75,38 @@ async function source(t, files) {
   return root;
 }
 
+test("native full-object MD5 supports sync without treating revision ETags as hashes", async (t) => {
+  const root = await source(t, {
+    "same.txt": "same",
+    "changed.txt": "new",
+    "uncertain.txt": "same",
+  });
+  const metadata = (body) => ({
+    ContentLength: body.length,
+    ETag: '"gcs:123:4"',
+    ChecksumMD5: createHash("md5").update(body).digest("base64"),
+    ChecksumType: "FULL_OBJECT",
+  });
+  const s3 = remote({
+    "same.txt": metadata("same"),
+    "changed.txt": metadata("old"),
+    "uncertain.txt": { ...metadata("same"), ChecksumType: "COMPOSITE" },
+  });
+  const plan = await compare(s3, { bucket: "b", source: root });
+  assert.equal(
+    plan.rows.find((row) => row.key === "same.txt").status,
+    "unchanged",
+  );
+  assert.equal(
+    plan.rows.find((row) => row.key === "changed.txt").status,
+    "changed",
+  );
+  assert.equal(
+    plan.rows.find((row) => row.key === "uncertain.txt").status,
+    "changed",
+  );
+});
+
 test("compares complete paginated prefixes and maps folder contents, preserving remote extras by default", async (t) => {
   const root = await source(t, {
     "same.txt": "same",

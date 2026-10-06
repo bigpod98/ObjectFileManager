@@ -11,6 +11,7 @@ const { createHmac, randomBytes, timingSafeEqual } = require("node:crypto");
 const PAGE_SIZE = 500;
 const SEARCH_PAGES = 5;
 const snapshotSecrets = new WeakMap();
+const { requireCapability } = require("./provider-capabilities.cjs");
 
 function canonical(value) {
   if (value instanceof Date) return value.toISOString();
@@ -168,6 +169,7 @@ async function details(s3, options) {
 }
 
 async function versions(s3, { bucket, key, keyMarker, versionIdMarker }) {
+  requireCapability(s3, "versions", "Object versions");
   objectArgs({ bucket, key });
   if (versionIdMarker && !keyMarker)
     throw new Error("A version marker requires its key marker.");
@@ -221,6 +223,7 @@ async function versions(s3, { bucket, key, keyMarker, versionIdMarker }) {
 }
 
 async function restore(s3, { bucket, key, versionId }) {
+  requireCapability(s3, "versions", "Version restore");
   const input = objectArgs({ bucket, key });
   required(versionId, "Version ID");
   return operation("Version restore", async () => {
@@ -261,6 +264,7 @@ async function restore(s3, { bucket, key, versionId }) {
 }
 
 async function metadata(s3, options) {
+  requireCapability(s3, "metadata", "Reviewed metadata editing");
   const {
     bucket,
     key,
@@ -335,6 +339,7 @@ async function metadata(s3, options) {
 }
 
 async function signedUrl(s3, { bucket, key, expiresIn = 3600 }) {
+  requireCapability(s3, "signedUrl", "Expiring download links");
   const input = objectArgs({ bucket, key });
   if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 604800)
     throw new Error(
@@ -342,7 +347,9 @@ async function signedUrl(s3, { bucket, key, expiresIn = 3600 }) {
     );
   const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
   return operation("Expiring download link", () =>
-    getSignedUrl(s3, new GetObjectCommand(input), { expiresIn }),
+    typeof s3.signedUrl === "function"
+      ? s3.signedUrl(input, expiresIn)
+      : getSignedUrl(s3, new GetObjectCommand(input), { expiresIn }),
   );
 }
 
@@ -350,6 +357,7 @@ async function multipart(
   s3,
   { bucket, prefix = "", keyMarker, uploadIdMarker },
 ) {
+  requireCapability(s3, "multipart", "S3 multipart cleanup");
   required(bucket, "Bucket");
   if (typeof prefix !== "string")
     throw new Error("Upload prefix must be text.");
@@ -395,6 +403,7 @@ async function multipart(
 }
 
 async function abortMultipart(s3, { bucket, key, uploadId }) {
+  requireCapability(s3, "multipart", "S3 multipart cleanup");
   const input = {
     ...objectArgs({ bucket, key }),
     UploadId: required(uploadId, "Upload ID"),

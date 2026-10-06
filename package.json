@@ -10,6 +10,7 @@
     "dist": "node scripts/package-linux.cjs",
     "pack": "electron-builder --dir",
     "test:desktop": "node test/desktop.cjs",
+    "test:desktop:providers": "node test/desktop-providers.cjs",
     "test:scale": "node test/scale.cjs",
     "format": "prettier --write src test scripts package.json README.md packaging/README.md .forgejo/workflows",
     "check": "prettier --check src test scripts package.json README.md packaging/README.md .forgejo/workflows",
@@ -57,6 +58,8 @@
     "@aws-sdk/client-s3": "^3.1136.0",
     "@aws-sdk/lib-storage": "^3.1136.0",
     "@aws-sdk/s3-request-presigner": "^3.1138.0",
+    "@azure/storage-blob": "^12.34.0",
+    "@google-cloud/storage": "^8.2.0",
     "mime-types": "^3.0.2"
   },
   "devDependencies": {

@@ -17,6 +17,14 @@ const downloads = require("./downloads.cjs");
 const operations = require("./operations.cjs");
 const objectTools = require("./object-tools.cjs");
 const { Workspace } = require("./workspace.cjs");
+const {
+  normalizeProfile,
+  publicProfile,
+  serializeProfile,
+  restoreProfile,
+  refreshSwiftToken,
+} = require("./profiles.cjs");
+const refreshingProfiles = new Set();
 let win,
   queue,
   workspace,
@@ -32,18 +40,11 @@ const secure = () =>
   (process.platform !== "linux" ||
     safeStorage.getSelectedStorageBackend() !== "basic_text");
 function publicProfiles() {
-  return profiles.map(
-    ({
-      secretAccessKey,
-      accessKeyId,
-      sessionToken,
-      credentials,
-      stored,
-      ...p
-    }) => p,
-  );
+  return profiles.map(publicProfile);
 }
 function getClient(id) {
+  if (refreshingProfiles.has(id))
+    throw new Error("Wait for this connection’s token refresh to finish.");
   if (clients.has(id)) return clients.get(id);
   const p = profiles.find((p) => p.id === id);
   if (!p) throw new Error("Connection not found.");
@@ -58,18 +59,7 @@ function getClient(id) {
 async function persistProfiles() {
   const data = profiles
     .filter((p) => p.remember)
-    .map((p) => {
-      if (p.locked) return p.stored;
-      const { secretAccessKey, accessKeyId, sessionToken, ...metadata } = p;
-      return {
-        ...metadata,
-        credentials: safeStorage
-          .encryptString(
-            JSON.stringify({ secretAccessKey, accessKeyId, sessionToken }),
-          )
-          .toString("base64"),
-      };
-    });
+    .map((p) => serializeProfile(p, safeStorage));
   const target = profilePath();
   await fs.writeFile(`${target}.tmp`, JSON.stringify(data), { mode: 0o600 });
   await fs.rename(`${target}.tmp`, target);
@@ -94,28 +84,8 @@ else
   app.whenReady().then(async () => {
     await fs.mkdir(app.getPath("userData"), { recursive: true, mode: 0o700 });
     try {
-      profiles = JSON.parse(await fs.readFile(profilePath(), "utf8")).map(
-        (p) => {
-          try {
-            return {
-              ...p,
-              ...JSON.parse(
-                safeStorage.decryptString(Buffer.from(p.credentials, "base64")),
-              ),
-            };
-          } catch {
-            return {
-              id: p.id,
-              name: p.name,
-              provider: p.provider,
-              endpoint: p.endpoint,
-              bucket: p.bucket,
-              remember: true,
-              locked: true,
-              stored: p,
-            };
-          }
-        },
+      profiles = JSON.parse(await fs.readFile(profilePath(), "utf8")).map((p) =>
+        restoreProfile(p, safeStorage),
       );
     } catch (e) {
       if (e.code !== "ENOENT")
@@ -200,40 +170,11 @@ else
       version: app.getVersion(),
     }));
     handle("connection:add", async (p) => {
-      if (!p.name?.trim() || !p.accessKeyId?.trim() || !p.secretAccessKey)
-        throw new Error("Name, access key, and secret key are required.");
-      if (p.endpoint) {
-        const url = new URL(p.endpoint);
-        if (
-          !["http:", "https:"].includes(url.protocol) ||
-          url.username ||
-          url.password ||
-          url.search ||
-          url.hash
-        )
-          throw new Error(
-            "Use an HTTP or HTTPS endpoint without embedded credentials, query, or fragment.",
-          );
-      }
-      if (p.provider !== "Amazon S3" && !p.endpoint)
-        throw new Error("An endpoint is required for this provider.");
+      const profile = { ...normalizeProfile(p), id: randomUUID() };
       if (p.remember && !secure())
         throw new Error(
           "A secure OS keyring is unavailable. Uncheck “Remember credentials” to connect for this session.",
         );
-      const profile = {
-        id: randomUUID(),
-        name: p.name.trim(),
-        provider: p.provider,
-        endpoint: p.endpoint.trim(),
-        region: p.region.trim() || "us-east-1",
-        bucket: p.bucket.trim(),
-        pathStyle: !!p.pathStyle,
-        accessKeyId: p.accessKeyId.trim(),
-        secretAccessKey: p.secretAccessKey,
-        sessionToken: p.sessionToken || "",
-        remember: !!p.remember,
-      };
       profiles.push(profile);
       try {
         await persistProfiles();
@@ -243,7 +184,46 @@ else
       }
       return publicProfiles();
     });
+    handle("connection:refresh-swift", async ({ id, token } = {}) => {
+      if (refreshingProfiles.has(id))
+        throw new Error("Wait for this connection’s token refresh to finish.");
+      const previous = profiles.find((p) => p.id === id);
+      const updated = refreshSwiftToken(previous, token);
+      if (updated.remember && !secure())
+        throw new Error(
+          "Unlock your operating system keyring before saving a refreshed token.",
+        );
+      if (
+        workspace
+          .list()
+          .some(
+            (job) =>
+              job.profile === id &&
+              (job.state === "running" ||
+                job.id === workspace.activeRun?.id ||
+                job.id === queue.running?.id),
+          )
+      )
+        throw new Error(
+          "Pause this connection’s active transfer batch before refreshing its token.",
+        );
+      refreshingProfiles.add(id);
+      profiles = profiles.map((p) => (p.id === id ? updated : p));
+      try {
+        await persistProfiles();
+      } catch (error) {
+        profiles = profiles.map((p) => (p.id === id ? previous : p));
+        throw error;
+      } finally {
+        refreshingProfiles.delete(id);
+      }
+      clients.get(id)?.destroy();
+      clients.delete(id);
+      return publicProfiles();
+    });
     handle("connection:remove", async (id) => {
+      if (refreshingProfiles.has(id))
+        throw new Error("Wait for this connection’s token refresh to finish.");
       if (
         workspace
           .list()

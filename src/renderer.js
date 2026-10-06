@@ -68,6 +68,11 @@ function renderConnections() {
   for (const el of $("#connections").children)
     el.onclick = act(() => selectConnection(el.dataset.id));
 }
+function storageNoun(provider = state.profile?.provider) {
+  return ["OpenStack Swift", "Azure Blob Storage"].includes(provider)
+    ? "container"
+    : "bucket";
+}
 async function selectConnection(id) {
   state.selection.clear();
   state.searchQuery = null;
@@ -83,9 +88,23 @@ async function selectConnection(id) {
   $("#workspace-name").textContent = state.profile.name;
   $("#connection-name").textContent = state.profile.name;
   $("#endpoint-label").textContent =
-    state.profile.endpoint || "Amazon S3 · Regional endpoint";
+    state.profile.endpoint ||
+    (state.profile.provider === "Azure Blob Storage"
+      ? "Azure Blob Storage · Account endpoint"
+      : state.profile.provider === "Google Cloud Storage"
+        ? `Google Cloud Storage${state.profile.projectId ? ` · ${state.profile.projectId}` : ""}`
+        : "Amazon S3 · Regional endpoint");
   $("#provider-label").textContent = state.profile.provider;
-  $("#bucket-select").innerHTML = '<option value="">Select a bucket</option>';
+  $("#refresh-swift").hidden = state.profile.provider !== "OpenStack Swift";
+  $("#refresh-swift").disabled = !!state.profile.locked;
+  const noun = storageNoun();
+  $("#bucket-label").textContent = noun.toUpperCase();
+  $("#bucket-select").setAttribute("aria-label", `Choose ${noun}`);
+  $("#list-buckets").textContent = `↻ List ${noun}s`;
+  $("#direct-bucket").placeholder = `Or enter a ${noun} name`;
+  $("#direct-bucket").setAttribute("aria-label", `${noun} name`);
+  $("#open-bucket").textContent = `Open ${noun} →`;
+  $("#bucket-select").innerHTML = `<option value="">Select a ${noun}</option>`;
   $("#direct-bucket").value = state.profile.bucket || "";
   renderFiles();
   if (state.profile.bucket) await openBucket(state.profile.bucket);
@@ -99,18 +118,18 @@ async function listBuckets() {
     const buckets = await api.buckets(id);
     if (state.profile?.id !== id) return;
     $("#bucket-select").innerHTML =
-      '<option value="">Select a bucket</option>' +
+      `<option value="">Select a ${storageNoun()}</option>` +
       buckets
         .map((b) => `<option value="${esc(b)}">${esc(b)}</option>`)
         .join("");
     $("#bucket-select").value = state.bucket;
     if (!buckets.length)
       $("#browser-status").textContent =
-        "No buckets returned. You can also open a bucket by name.";
+        `No ${storageNoun()}s returned. You can also open a ${storageNoun()} by name.`;
   } catch (e) {
     if (state.profile?.id === id)
       $("#browser-status").textContent =
-        `Could not list buckets: ${e.message}. Enter a bucket name to open it directly.`;
+        `Could not list ${storageNoun()}s: ${e.message}. Enter a ${storageNoun()} name to open it directly.`;
   } finally {
     $("#list-buckets").disabled = false;
   }
@@ -170,7 +189,9 @@ async function loadFiles() {
 }
 function renderFiles() {
   let accumulated = "";
-  const crumbs = [{ label: state.bucket || "Select a bucket", prefix: "" }];
+  const crumbs = [
+    { label: state.bucket || `Select a ${storageNoun()}`, prefix: "" },
+  ];
   for (const part of state.prefix.split("/").slice(0, -1)) {
     accumulated += part + "/";
     crumbs.push({ label: part || "(empty segment)", prefix: accumulated });
@@ -229,7 +250,7 @@ function renderFiles() {
   renderSelection();
   $("#clear-search").hidden = state.searchQuery === null;
   $("#browser-status").textContent = !state.bucket
-    ? "Select a bucket or enter its name to start browsing."
+    ? `Select a ${storageNoun()} or enter its name to start browsing.`
     : state.listing && !rows.length
       ? filter
         ? "No matching objects on this page."
@@ -254,10 +275,12 @@ function newUpload() {
   }
   if (!state.bucket) {
     view("browser");
-    toast("Open a destination bucket first.");
+    toast(`Open a destination ${storageNoun()} first.`);
     return;
   }
   state.uploadContext = locationContext();
+  $("#upload-title").textContent = `Upload to your ${storageNoun()}`;
+  $("#upload-prefix").placeholder = `Leave empty for ${storageNoun()} root`;
   $("#upload-prefix").value = state.prefix;
   $("#upload-destination").textContent =
     `${state.profile.name} / ${state.bucket}`;
@@ -424,19 +447,66 @@ for (const b of document.querySelectorAll("[data-close]"))
   b.onclick = () => document.getElementById(b.dataset.close).close();
 $("#provider").onchange = () => {
   const p = $("#provider").value;
+  const kind =
+    p === "OpenStack Swift"
+      ? "swift"
+      : p === "Azure Blob Storage"
+        ? "azure"
+        : p === "Google Cloud Storage"
+          ? "gcs"
+          : "s3";
+  for (const group of document.querySelectorAll("[data-provider-fields]")) {
+    const active = group.dataset.providerFields === kind;
+    group.hidden = !active;
+    for (const input of group.querySelectorAll("input, textarea")) {
+      if (input.required) input.dataset.required = "";
+      input.disabled = !active;
+      input.required = active && input.dataset.required !== undefined;
+    }
+  }
+  $("#endpoint-field").hidden = kind === "gcs";
+  $("#endpoint").disabled = kind === "gcs";
+  $("#endpoint").required =
+    kind === "swift" || (kind === "s3" && p !== "Amazon S3");
+  $("#endpoint-title").textContent =
+    kind === "swift"
+      ? "Account storage URL"
+      : kind === "azure"
+        ? "Blob service URL (optional)"
+        : "Endpoint URL";
+  $("#default-bucket-label").textContent =
+    `Default ${storageNoun(p)} (optional)`;
+  $("#default-bucket").placeholder = `my-${storageNoun(p)}`;
   $("#region").value = p === "Cloudflare R2" ? "auto" : "us-east-1";
   $("#path-style").checked = ["Ceph", "MinIO", "Custom S3"].includes(p);
   $("#endpoint").placeholder =
-    p === "Cloudflare R2"
-      ? "https://ACCOUNT_ID.r2.cloudflarestorage.com"
-      : p === "Amazon S3"
-        ? "Leave empty for the default AWS endpoint"
-        : "https://s3.example.com";
+    kind === "swift"
+      ? "https://swift.example.com/v1/AUTH_account"
+      : kind === "azure"
+        ? "Default: https://ACCOUNT.blob.core.windows.net"
+        : p === "Cloudflare R2"
+          ? "https://ACCOUNT_ID.r2.cloudflarestorage.com"
+          : p === "Amazon S3"
+            ? "Leave empty for the default AWS endpoint"
+            : "https://s3.example.com";
   $("#endpoint-help").textContent =
-    p === "Cloudflare R2"
-      ? "Use the S3 API endpoint from your Cloudflare dashboard."
-      : "Use the S3 API endpoint, including https:// and an optional port.";
+    kind === "swift"
+      ? "Use the account storage URL from the service catalog, including /v1/AUTH_account; do not use the Keystone authentication URL."
+      : kind === "azure"
+        ? "Leave empty for public Azure, or enter your Blob service endpoint for a sovereign cloud or emulator."
+        : p === "Cloudflare R2"
+          ? "Use the S3 API endpoint from your Cloudflare dashboard."
+          : "Use the S3 API endpoint, including https:// and an optional port.";
+  $("#provider-help").textContent =
+    kind === "swift"
+      ? "Connect with an existing Swift token. When it expires, use Refresh Swift token to keep your queued batches. A configured account TempURL key enables download links."
+      : kind === "azure"
+        ? "Connect with a storage account key. Containers appear in the browser like S3 buckets."
+        : kind === "gcs"
+          ? "Connect to Google Cloud Storage with a service account JSON key. The account needs permission for the buckets you use; a project ID is needed to list buckets."
+          : "Connect using S3 API credentials.";
 };
+$("#provider").onchange();
 $("#connection-form").onsubmit = async (e) => {
   e.preventDefault();
   const button = e.submitter;
@@ -454,6 +524,42 @@ $("#connection-form").onsubmit = async (e) => {
     await selectConnection(state.profiles.at(-1).id);
   } catch (e) {
     $("#connection-error").textContent = e.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+$("#refresh-swift").onclick = () => {
+  $("#swift-token-form").reset();
+  $("#swift-token-error").textContent = "";
+  $("#swift-token-connection").textContent = state.profile.name;
+  $("#swift-token-form").dataset.profile = state.profile.id;
+  $("#swift-token-dialog").showModal();
+};
+$("#swift-token-dialog").addEventListener("close", () =>
+  $("#swift-token-form").reset(),
+);
+$("#swift-token-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const id = event.target.dataset.profile;
+    state.profiles = await api["connection:refresh-swift"]({
+      id,
+      token: $("#swift-token").value,
+    });
+    if (state.profile?.id === id)
+      state.profile = state.profiles.find((profile) => profile.id === id);
+    renderConnections();
+    $("#swift-token-form").reset();
+    $("#swift-token-dialog").close();
+    toast("Swift token updated. You can resume your queued batches.");
+    if (state.profile?.id === id) {
+      if (state.bucket) await loadFiles();
+      else await listBuckets();
+    }
+  } catch (error) {
+    $("#swift-token-error").textContent = error.message;
   } finally {
     button.disabled = false;
   }

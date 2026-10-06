@@ -15,6 +15,13 @@ const { createHash } = require("node:crypto");
 const fs = require("node:fs/promises");
 const mime = require("mime-types");
 function client(profile) {
+  const adapters = {
+    "OpenStack Swift": "./providers/swift.cjs",
+    "Azure Blob Storage": "./providers/azure.cjs",
+    "Google Cloud Storage": "./providers/gcs.cjs",
+  };
+  if (Object.hasOwn(adapters, profile.provider))
+    return require(adapters[profile.provider]).client(profile);
   return new S3Client({
     region: profile.region || "us-east-1",
     endpoint: profile.endpoint || undefined,
@@ -120,6 +127,12 @@ async function transfer(s3, job, entry, signal, onProgress) {
   }
 }
 async function uploadObject(s3, job, entry, signal, onProgress) {
+  if (entry.etag)
+    require("./provider-capabilities.cjs").requireCapability(
+      s3,
+      "conditionalWrite",
+      "Replacing reviewed objects",
+    );
   const skipExisting = !job.overwrite && !entry.expectedAbsent && !entry.etag;
   if (skipExisting) {
     try {
@@ -198,6 +211,39 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
   const body = limiter ? source.pipe(limiter) : source;
   const onSourceError = (error) => body.destroy(error);
   if (limiter) source.on("error", onSourceError);
+  // Native providers own their block/resumable transport while sharing queue
+  // throttling, source validation, recovery metadata and cancellation.
+  if (typeof s3.upload === "function") {
+    const abort = () =>
+      body.destroy(
+        Object.assign(new Error("Upload paused"), { name: "AbortError" }),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      await s3.upload(
+        {
+          Bucket: job.bucket,
+          Key: entry.key,
+          Body: body,
+          ContentLength: entry.size,
+          ContentType: mime.lookup(entry.key) || "application/octet-stream",
+          ...condition,
+          ...metadata,
+        },
+        { abortSignal: signal, onProgress: onProgress || (() => {}) },
+      );
+    } catch (error) {
+      if (skipExisting && error.$metadata?.httpStatusCode === 412)
+        return "skipped";
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abort);
+      source.destroy();
+      body.destroy();
+    }
+    return;
+  }
   // Scope cancellation to this file, while allowing multipart cleanup to finish.
   // Upload.abort() alone races its worker and can leave HTTP requests in flight.
   const scopedClient = {
