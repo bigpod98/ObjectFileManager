@@ -1,5 +1,7 @@
 # S3 Browser
 
+## this project is vibecoded mess works for me i hope it works for you write an issue if it doesnt and ill see what i can do
+
 A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3-compatible endpoints, OpenStack Swift, Azure Blob Storage, and Google Cloud Storage. Browse and organize objects, queue uploads and folder downloads, inspect object versions and metadata, and review one-way folder syncs. Built with Electron, native storage adapters, and a persistent SQLite transfer queue.
 
 ![S3 Browser](assets/welcome.png)
