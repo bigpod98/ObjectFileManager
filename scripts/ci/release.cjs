@@ -82,55 +82,61 @@ async function prepare(root, env = process.env) {
 }
 async function publish(root, env = process.env, request = fetch) {
   const release = await validate(root, env);
-  const origin = new URL(env.FORGEJO_URL);
-  if (
-    !["https:", "http:"].includes(origin.protocol) ||
-    origin.username ||
-    origin.password ||
-    origin.search ||
-    origin.hash
-  )
-    throw new Error(
-      "FORGEJO_URL must be an HTTP(S) instance URL without credentials or query parameters.",
-    );
-  const repository = env.FORGEJO_REPOSITORY;
+  const repository = env.GITHUB_REPOSITORY;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository || ""))
-    throw new Error("FORGEJO_REPOSITORY must be owner/repository.");
-  if (!env.FORGEJO_TOKEN)
-    throw new Error(
-      "A Forgejo token with repository write access is required.",
-    );
-  const base = `${origin.href.replace(/\/$/, "")}/api/v1/repos/${repository}`;
-  const token = { Authorization: `token ${env.FORGEJO_TOKEN}` };
-  async function api(route, { method = "GET", body, missing = false } = {}) {
+    throw new Error("GITHUB_REPOSITORY must be owner/repository.");
+  if (!env.GITHUB_TOKEN)
+    throw new Error("A GitHub token with contents:write access is required.");
+  const base = `https://api.github.com/repos/${repository}`;
+  const headers = {
+    Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2026-03-10",
+  };
+  async function api(route, { method = "GET", body } = {}) {
     const response = await request(base + route, {
       method,
       redirect: "error",
       headers: {
-        ...token,
-        ...(body && !(body instanceof FormData)
-          ? { "Content-Type": "application/json" }
-          : {}),
+        ...headers,
+        ...(body ? { "Content-Type": "application/json" } : {}),
       },
-      body:
-        body instanceof FormData
-          ? body
-          : body
-            ? JSON.stringify(body)
-            : undefined,
+      body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(300000),
     });
-    if (missing && response.status === 404) return null;
     if (!response.ok)
       throw new Error(
-        `Forgejo ${method} ${route} failed (HTTP ${response.status}).`,
+        `GitHub ${method} ${route} failed (HTTP ${response.status}).`,
       );
     return response.status === 204 ? null : response.json();
   }
-  const tagPath = encodeURIComponent(release.tag);
+  async function list(route) {
+    const result = [];
+    for (let page = 1; ; page++) {
+      const rows = await api(`${route}?page=${page}&per_page=100`);
+      if (!Array.isArray(rows))
+        throw new Error("Invalid GitHub list response.");
+      result.push(...rows);
+      if (rows.length < 100) return result;
+    }
+  }
+  async function findRelease() {
+    // Listing includes drafts for callers with push access; the by-tag endpoint
+    // is documented for published releases and cannot recover an interrupted draft.
+    const matches = (await list("/releases")).filter(
+      (row) => row.tag_name === release.tag,
+    );
+    if (matches.length > 1)
+      throw new Error(`Duplicate release for ${release.tag}.`);
+    return matches[0];
+  }
   async function verifyTag() {
-    const remote = await api(`/tags/${tagPath}`);
-    if (remote.commit?.sha !== release.sha)
+    // Explicit tags/ avoids a same-named branch and resolves annotated tags to
+    // their commit, unlike comparing a Git reference's tag-object SHA directly.
+    const remote = await api(
+      `/commits/${encodeURIComponent(`tags/${release.tag}`)}`,
+    );
+    if (remote.sha !== release.sha)
       throw new Error(
         "Remote release tag does not match the tested commit; refusing publication.",
       );
@@ -149,7 +155,7 @@ async function publish(root, env = process.env, request = fetch) {
     throw new Error("Release checksums do not match the staged assets.");
   names.push("SHA256SUMS");
   await verifyTag();
-  let record = await api(`/releases/tags/${tagPath}`, { missing: true });
+  let record = await findRelease();
   if (!record) {
     try {
       record = await api("/releases", {
@@ -165,7 +171,7 @@ async function publish(root, env = process.env, request = fetch) {
       });
     } catch (error) {
       // A timeout or another run may have created it. Read before retrying.
-      record = await api(`/releases/tags/${tagPath}`, { missing: true });
+      record = await findRelease();
       if (!record) throw error;
     }
   }
@@ -177,24 +183,59 @@ async function publish(root, env = process.env, request = fetch) {
     throw new Error(
       "Existing release is not the expected stable tagged release.",
     );
+  const uploadURL = new URL(record.upload_url.replace(/\{\?name,label\}$/, ""));
+  if (
+    uploadURL.origin !== "https://uploads.github.com" ||
+    uploadURL.username ||
+    uploadURL.password ||
+    uploadURL.search ||
+    uploadURL.hash ||
+    uploadURL.pathname !== `/repos/${repository}/releases/${record.id}/assets`
+  )
+    throw new Error("Unexpected release asset upload URL.");
   async function attachments() {
-    const result = [];
-    for (let page = 1; ; page++) {
-      const rows = await api(
-        `/releases/${record.id}/assets?page=${page}&limit=50`,
-      );
-      result.push(...rows);
-      if (rows.length < 50) return result;
+    const assets = await list(`/releases/${record.id}/assets`);
+    const seen = new Set();
+    for (const asset of assets) {
+      if (seen.has(asset.name))
+        throw new Error(`Duplicate release asset: ${asset.name}`);
+      seen.add(asset.name);
     }
+    for (const asset of assets)
+      if (!names.includes(asset.name))
+        throw new Error(
+          `Unexpected release asset: ${asset.name}. Refusing to alter this release.`,
+        );
+    return assets;
   }
   async function verifyAsset(asset, name) {
-    const url = new URL(asset.browser_download_url);
-    if (url.origin !== origin.origin)
-      throw new Error("Unexpected release asset download origin.");
-    const response = await request(url, {
-      headers: token,
-      signal: AbortSignal.timeout(300000),
-    });
+    if (
+      !Number.isSafeInteger(asset.id) ||
+      asset.id < 1 ||
+      asset.state !== "uploaded"
+    )
+      throw new Error(`Release asset is not fully uploaded: ${name}`);
+    let url = new URL(`${base}/releases/assets/${asset.id}`);
+    let response;
+    for (let redirects = 0; ; redirects++) {
+      response = await request(url, {
+        redirect: "manual",
+        headers: {
+          ...(redirects === 0 ? headers : {}),
+          Accept: "application/octet-stream",
+        },
+        signal: AbortSignal.timeout(300000),
+      });
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      await response.body?.cancel();
+      if (redirects >= 5 || !response.headers.get("location"))
+        throw new Error("Invalid release asset download redirect.");
+      url = new URL(response.headers.get("location"), url);
+      // Signed storage URLs need no token. Never forward GitHub credentials to
+      // a redirected host (or allow a downgrade to plaintext HTTP).
+      if (url.protocol !== "https:" || url.username || url.password)
+        throw new Error("Unsafe release asset download redirect.");
+    }
     if (!response.ok)
       throw new Error(
         `Could not verify uploaded asset ${name} (HTTP ${response.status}).`,
@@ -210,17 +251,26 @@ async function publish(root, env = process.env, request = fetch) {
     let matches = (await attachments()).filter((asset) => asset.name === name);
     if (matches.length > 1) throw new Error(`Duplicate release asset: ${name}`);
     if (!matches.length) {
-      const body = new FormData();
-      body.append(
-        "attachment",
-        await openAsBlob(path.join(directory, name)),
-        name,
-      );
+      const body = await openAsBlob(path.join(directory, name));
+      const url = new URL(uploadURL);
+      url.searchParams.set("name", name);
       try {
-        await api(
-          `/releases/${record.id}/assets?name=${encodeURIComponent(name)}`,
-          { method: "POST", body },
-        );
+        const response = await request(url, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            ...headers,
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(body.size),
+          },
+          body,
+          signal: AbortSignal.timeout(300000),
+        });
+        if (!response.ok)
+          throw new Error(
+            `GitHub asset upload failed (HTTP ${response.status}).`,
+          );
+        await response.arrayBuffer();
       } catch (error) {
         matches = (await attachments()).filter((asset) => asset.name === name);
         if (!matches.length) throw error;
@@ -231,6 +281,8 @@ async function publish(root, env = process.env, request = fetch) {
       throw new Error(`Release asset is missing or duplicated: ${name}`);
     await verifyAsset(matches[0], name);
   }
+  if ((await attachments()).length !== names.length)
+    throw new Error("Release asset set changed during verification.");
   await verifyTag();
   // Preserve existing release notes/title. New or partially uploaded releases
   // remain drafts until every expected asset has been verified byte-for-byte.
@@ -241,7 +293,7 @@ async function publish(root, env = process.env, request = fetch) {
     });
   return (
     record.html_url ||
-    `${origin.href.replace(/\/$/, "")}/${repository}/releases/tag/${release.tag}`
+    `https://github.com/${repository}/releases/tag/${release.tag}`
   );
 }
 if (require.main === module) {

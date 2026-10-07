@@ -6,7 +6,7 @@ A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3
 
 ## Install
 
-[Releases](https://git.tuxbase.com/bigpod/S3Browser/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#forgejo-ci-and-releases) for how releases are built and validated.
+[Releases](https://github.com/bigpod98/S3Browser/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#github-actions-and-releases) for how releases are built and validated.
 
 Building from source places native Linux packages in `dist/native/`:
 

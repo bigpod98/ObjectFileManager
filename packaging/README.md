@@ -42,7 +42,7 @@ Package versions use the application version plus package release `1`, for examp
 
 Files are root-owned. The Chromium sandbox helper is root-owned mode `4755`, as required for its setuid fallback. The installed launcher does not disable sandboxing. The app uses the desktop OS keyring if available; `gnome-keyring` is recommended/optional, rather than required for session-only connections.
 
-S3 Browser is MIT-licensed. RPM and ALPM metadata declare `MIT` for the project; Debian's `copyright` file declares MIT for the project and points to the bundled-component notices. Packages are unsigned. The release workflow attaches them to the tagged Forgejo release; native package registry publication is not configured. The maintainer is Primož Ajdišek <bigpod@bigpod.si>.
+S3 Browser is MIT-licensed. RPM and ALPM metadata declare `MIT` for the project; Debian's `copyright` file declares MIT for the project and points to the bundled-component notices. Packages are unsigned. The release workflow attaches them to the tagged GitHub release; native package registry publication is not configured. The maintainer is Primož Ajdišek <bigpod@bigpod.si>.
 
 ## License notices
 
@@ -71,23 +71,21 @@ After startup, the test removes the package and verifies that its executable and
 
 The container smoke test uses `--no-sandbox` because Docker restricts nested Chromium sandbox namespaces. When testing a foreign architecture under QEMU, it also uses `--no-zygote` and `--in-process-gpu` to avoid emulated GPU/zygote subprocess failures, with a longer startup timeout. The ARM Arch builder disables pacman's download sandbox because QEMU does not provide Landlock; package signature checks remain enabled. This flag is confined to the test script; host desktop sandbox behavior and keyring integration need a real desktop session. Debian/Ubuntu compatibility beyond Debian 12 and RPM distributions beyond Fedora 43 are not exercised by these containers.
 
-## Forgejo CI and releases
+## GitHub Actions and releases
 
-The workflows in `.forgejo/workflows/` run on runners with the `docker` label. They target an x86_64 Docker host and use a `node:22-bookworm` job container, with no external storage credentials. Each job builds MinIO from a pinned upstream commit with Go 1.25.5, installs Azurite 3.35.0, and runs the checks through `scripts/ci/with-test-services.sh`, which starts fresh loopback services for the job. The release job must also be able to reach a Docker daemon and set up privileged QEMU/binfmt. Package containers receive their inputs through `docker cp`, so the job workspace does not need to exist at the same path on the daemon host. Workflow syntax follows the [Forgejo Actions reference](https://forgejo.org/docs/latest/user/actions/reference/).
+The workflows in `.github/workflows/` use GitHub-hosted Ubuntu runners with a `node:22-bookworm` job container for checks and builds. Each build job compiles MinIO from a pinned upstream commit with Go 1.25.5, installs Azurite 3.35.0, and starts fresh loopback test services through `scripts/ci/with-test-services.sh`. No cloud-account credentials are required.
 
-- **CI** runs on every branch push, pull request and manual dispatch. It installs locked dependencies, checks formatting, runs the backend suite against MinIO and Azurite, runs the provider form smoke test and both Electron suites under Xvfb, and builds x86_64 and ARM64 Linux application bundles.
-- **Release** runs only on a pushed `vMAJOR.MINOR.PATCH` tag. It requires the tag, checked-out commit, event commit, `package.json` and `package-lock.json` to agree. Prerelease tags are rejected because native package version conversion is not implemented. It repeats the checks, builds portable archives for both architectures, builds DEB/RPM/Arch from each corresponding unpacked runtime, validates installation/startup/removal for each native package, and smoke-tests the bundled application.
+- **CI** runs on every branch push, pull request and manual dispatch with `contents: read`. It installs locked dependencies, checks formatting, runs the backend suite against MinIO and Azurite, runs the provider form smoke and both Electron suites under Xvfb, and builds x86_64 and ARM64 Linux application bundles on `ubuntu-24.04`.
+- **Release builds** run only on pushed `vMAJOR.MINOR.PATCH` tags. They require the tag, checked-out commit, event commit and both package versions to agree. Prerelease tags are rejected. Separate `ubuntu-24.04` and `ubuntu-24.04-arm` jobs run the checks, build each architecture's portable archive and DEB/RPM/Arch packages, validate native installation/startup/removal, and smoke-test the bundled application. ARM64 packages run natively on the ARM runner. Docker Buildx builds the distro containers; package inputs are passed through `docker cp`.
+- **Release publication** runs in a separate job only after both builds pass. It downloads the tested artifacts from the same workflow run, prepares the exact asset set and checksums, and uses `GITHUB_TOKEN` with `contents: write` to publish. Build jobs retain read-only permissions. No personal access token or `RELEASE_TOKEN` secret is required.
+
+GitHub documents the [hosted runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and [workflow permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions). Hosted execution must still be verified after the repository is moved; local workflow validation does not execute GitHub's runners.
 
 ### Untrusted pull requests and runner isolation
 
-CI runs for pull requests, including those from forks. The job runs the contributed code: dependency install scripts, tests, and electron-builder hooks. Job containers isolate only as much as the runner host is configured to. This repository cannot verify or enforce those host settings. Before running CI for untrusted contributions, the instance or runner administrator should confirm that:
+CI uses `pull_request`, including fork contributions, with read-only permissions and no publication secrets. The contributed code runs dependency install scripts, tests, and packaging hooks. Keep these jobs on GitHub-hosted runners, where each standard Ubuntu job has its own VM, and require approval for outside contributors in the repository's Actions settings. Review workflow and script changes before approving runs. Do not switch to persistent self-hosted runners without separately reviewing their isolation.
 
-- workflows from forks or new contributors require approval if the instance supports it, and maintainers review workflow and script changes before approving;
-- jobs receive no Docker socket, privileged mode, or host mounts. The CI job does not need Docker; only the release job uses a daemon and privileged QEMU setup;
-- untrusted jobs do not share a persistent host, Docker daemon, or caches with release jobs, or the runner is recreated between jobs;
-- no repository secrets are exposed to pull request runs. Only the tag-triggered release job uses `RELEASE_TOKEN`.
-
-Both workflows use the existing `docker` runner label. If the instance provides separately isolated runners, point the CI job at them with `runs-on`. The release workflow runs the tagged commit's code with publication credentials, so tag only reviewed commits.
+Only the tag-triggered publication job requests write access. Tag reviewed commits, and restrict release tag creation using repository rules. See [GitHub migration](../docs/github-migration.md) for the repository setup and remaining migration steps.
 
 The release assets are exactly:
 
@@ -103,9 +101,9 @@ s3-browser-VERSION-linux-arm64.tar.gz
 SHA256SUMS
 ```
 
-The publication script derives the instance and repository from the workflow context rather than a hard-coded owner. It verifies the remote tag still identifies the tested commit. New releases stay drafts until all nine assets are uploaded and downloaded again to verify their checksums. If the release already exists, its title and notes are retained, matching assets are reused, and only missing assets are added. Differing existing assets stop publication; the workflow never replaces release files or moves tags. Failed uploads can be retried, but a rebuild that produces different bytes requires resolving that conflict explicitly or releasing a new version.
+The publication script targets GitHub.com and derives the repository from `GITHUB_REPOSITORY` rather than a hard-coded owner. It verifies the remote tag still identifies the tested commit. New releases stay drafts until all nine assets are uploaded and downloaded again to verify their checksums. If the release already exists, its title and notes are retained, matching assets are reused, and only missing assets are added. Differing existing assets stop publication; the workflow never replaces release files or moves tags. Failed uploads can be retried, but a rebuild that produces different bytes requires resolving that conflict explicitly or releasing a new version.
 
-The normal workflow token is used for repository release access. If the instance restricts that token, configure the repository Actions secret `RELEASE_TOKEN` with `write:repository` access to this repository. No publication token is passed to the checks or package builders. These assets go on the repository's tagged release, not to a native package registry.
+The workflow passes the automatic `GITHUB_TOKEN` only to the publication step. These assets go on the repository's tagged GitHub release, not to a native package registry.
 
 To release, update both version files, commit and push the changes, then push an annotated tag at that commit:
 
@@ -116,4 +114,4 @@ git tag -a v0.1.2 -m "Release 0.1.2"
 git push origin v0.1.2
 ```
 
-Use the actual next version, and configure `origin` for the Forgejo repository before pushing. There is no workflow that also publishes on release events, avoiding duplicate uploads. Windows/macOS installers and architectures other than Linux x86_64 and ARM64 are outside this workflow.
+Use the actual next version, and configure `origin` for `https://github.com/bigpod98/S3Browser.git` before pushing. There is no workflow that also publishes on release events, avoiding duplicate uploads. Windows/macOS installers and architectures other than Linux x86_64 and ARM64 are outside this workflow.

@@ -1,5 +1,9 @@
 # Open-source readiness review
 
+Historical review of the Forgejo version, before the later
+[GitHub migration preparation](github-migration.md). The workflow descriptions
+and hosted-runner caveats below refer to that reviewed version.
+
 Reviewed on 2026-10-07, starting at `2b5caf212b272651bd1091244e36208756a4464d`.
 The owner requested three independent reviews followed by fixes, and selected
 the MIT license. Reviews ran through T3 delegated tasks with GPT-6.1 Sol

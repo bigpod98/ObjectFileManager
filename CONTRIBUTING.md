@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, fixes, and focused improvements are welcome. Use the [issue tracker](https://git.tuxbase.com/bigpod/S3Browser/issues) for bugs and proposals, and open pull requests against `main` on [git.tuxbase.com](https://git.tuxbase.com/bigpod/S3Browser). Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in public issues.
+Bug reports, fixes, and focused improvements are welcome. Use the [issue tracker](https://github.com/bigpod98/S3Browser/issues) for bugs and proposals, and open pull requests against `main` on [GitHub](https://github.com/bigpod98/S3Browser). Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in public issues.
 
 ## Development setup
 

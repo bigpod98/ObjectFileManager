@@ -1,0 +1,111 @@
+name: Release
+
+# One publication path: stable version tags, never a competing release event.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            bundle: linux-unpacked
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            bundle: linux-arm64-unpacked
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 180
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify stable tag, version and checked-out commit
+        run: node scripts/ci/release.cjs validate
+      - name: Install build and desktop test dependencies
+        run: bash scripts/ci/install-deps.sh packages
+      - name: Install pinned Go toolchain for MinIO source build
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+          cache: false
+      - name: Build pinned MinIO and install Azurite test services
+        run: bash scripts/ci/install-test-services.sh
+      - name: Check formatting, backend integration and Electron workflows
+        run: bash scripts/ci/with-test-services.sh bash scripts/ci/check.sh
+      - name: Set up Docker Buildx for native package builders
+        uses: docker/setup-buildx-action@v3
+      - name: Build portable archive
+        run: npm run dist:portable -- --${{ matrix.arch }} --publish never
+      - name: Build DEB, RPM and Arch packages from the same bundle
+        run: npm run dist:packages -- --${{ matrix.arch }} --skip-bundle
+      - name: Install, launch and uninstall every native package
+        run: npm run test:packages -- --${{ matrix.arch }}
+      - name: Test the packaged Electron application
+        env:
+          S3_TEST_EXECUTABLE: ./dist/${{ matrix.bundle }}/s3-browser
+          S3_TEST_NO_SANDBOX: "1"
+        run: bash scripts/ci/with-test-services.sh xvfb-run -a npm run test:desktop
+      - name: Keep tested packages for publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            dist/s3-browser-*-linux-${{ matrix.arch }}.tar.gz
+            dist/native/deb/*.deb
+            dist/native/rpm/*.rpm
+            dist/native/alpm/*.pkg.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish verified release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download packages from both successful build jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
+      - name: Collect exact-version assets and checksums
+        run: node scripts/ci/release.cjs prepare
+      - name: Publish assets to this tag's GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/release.cjs publish
