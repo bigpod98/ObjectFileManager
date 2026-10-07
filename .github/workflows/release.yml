@@ -4,12 +4,18 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-refs/tags/${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -29,16 +35,23 @@ jobs:
     container:
       image: node:22-bookworm
     timeout-minutes: 180
+    outputs:
+      release_sha: ${{ steps.source.outputs.commit }}
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Check out the release tag
+        id: source
         uses: actions/checkout@v4
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Trust the mounted checkout in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Verify stable tag, version and checked-out commit
+        env:
+          RELEASE_SHA: ${{ github.event_name == 'push' && github.sha || steps.source.outputs.commit }}
         run: node scripts/ci/release.cjs validate
       - name: Install build and desktop test dependencies
         run: bash scripts/ci/install-deps.sh packages
@@ -85,12 +98,13 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
     steps:
       - name: Check out the release tag
         uses: actions/checkout@v4
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Node.js
