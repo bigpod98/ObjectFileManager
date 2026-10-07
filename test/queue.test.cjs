@@ -47,23 +47,24 @@ test("preserves Unicode, hidden files, nested and empty directories; skips symli
 test("pause aborts active files, resumes pending only, and retry handles failures", async (t) => {
   let active = 0,
     maxActive = 0,
-    fail = true;
+    fail = true,
+    pausing = true,
+    waiting = 0;
+  const pausedTransfers = Promise.withResolvers();
   const completed = [];
   const { root, q } = await fixture(t, async (_, job, entry, signal) => {
+    signal.throwIfAborted();
     active++;
     maxActive = Math.max(maxActive, active);
     try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, 20);
-        signal.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            reject(new Error("abort"));
-          },
-          { once: true },
-        );
-      });
+      if (pausing && Number(entry.key) >= 2) {
+        await new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+          if (++waiting === 2) pausedTransfers.resolve();
+        });
+      }
       if (entry.key === "3" && fail) throw new Error("Temporary failure");
       completed.push(entry.key);
     } finally {
@@ -78,10 +79,13 @@ test("pause aborts active files, resumes pending only, and retry handles failure
   }
   const id = await scan(q, sources, { concurrency: 2 });
   await q.start(id, {});
-  await new Promise((r) => setTimeout(r, 28));
+  await pausedTransfers.promise;
   await q.pause();
   assert.equal(q.list()[0].state, "paused");
   assert.equal(active, 0);
+  assert.equal(q.list()[0].done, 2);
+  assert.deepEqual(completed.slice().sort(), ["0", "1"]);
+  pausing = false;
   await q.start(id, {});
   await q.running.finished;
   assert.equal(maxActive, 2);
