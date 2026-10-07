@@ -22,6 +22,8 @@ const path = require("node:path");
     await expect(
       page.getByRole("heading", { name: "Your files. Any cloud." }),
     ).toBeVisible();
+    await expect(page.locator("#locations")).toContainText("Bookmark a bucket");
+    await expect(page.locator("#toast")).toBeHidden();
     const screenshots =
       process.env.S3_TEST_REFRESH_ASSETS === "1"
         ? "assets"

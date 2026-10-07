@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=S3 Browser
+Name=ObjectFileManager
 Comment=Browse and transfer files in S3, Swift, Azure Blob and Google Cloud Storage
-Exec=s3-browser
+Exec=objectfilemanager
 Icon=com.tuxbase.s3browser
 Terminal=false
 Categories=Utility;Network;FileTransfer;

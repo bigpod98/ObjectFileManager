@@ -1,5 +1,13 @@
 # Native Linux packages
 
+ObjectFileManager (OFM) replaces S3 Browser beginning with version 1.0.3. The
+package and command are `objectfilemanager`. DEB, RPM, and Arch metadata declare
+replacement of the old package. The desktop ID `com.tuxbase.s3browser`, Electron
+storage/keyring identity `s3-browser`, and existing profile directory stay stable
+so upgrades retain desktop integration, saved connections, and transfer history.
+Remote metadata fields and resumable download filenames also retain their old
+identifiers for compatibility. Repository links still point to `bigpod98/S3Browser`.
+
 Build all three formats from this project's source:
 
 ```sh
@@ -33,22 +41,22 @@ Package versions use the application version plus package release `1`, for examp
 
 ## Installed files
 
-- `/opt/s3-browser/`: private application and Electron runtime.
-- `/usr/bin/s3-browser`: symlink to the executable.
+- `/opt/objectfilemanager/`: private application and Electron runtime.
+- `/usr/bin/objectfilemanager`: symlink to the executable.
 - `/usr/share/applications/com.tuxbase.s3browser.desktop`: application menu entry.
 - `/usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png`: application icon.
-- `/usr/share/doc/s3-browser/`: README and the Debian-format `copyright` file.
-- `/usr/share/licenses/s3-browser/`: `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html`, also present in `/opt/s3-browser/`.
+- `/usr/share/doc/objectfilemanager/`: README and the Debian-format `copyright` file.
+- `/usr/share/licenses/objectfilemanager/`: `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html`, also present in `/opt/objectfilemanager/`.
 
 Files are root-owned. The Chromium sandbox helper is root-owned mode `4755`, as required for its setuid fallback. The installed launcher does not disable sandboxing. The app uses the desktop OS keyring if available; `gnome-keyring` is recommended/optional, rather than required for session-only connections.
 
-S3 Browser is MIT-licensed. RPM and ALPM metadata declare `MIT` for the project; Debian's `copyright` file declares MIT for the project and points to the bundled-component notices. Packages are unsigned. The release workflow attaches them to the tagged GitHub release; native package registry publication is not configured. The maintainer is Primož Ajdišek <bigpod@bigpod.si>.
+ObjectFileManager is MIT-licensed. RPM and ALPM metadata declare `MIT` for the project; Debian's `copyright` file declares MIT for the project and points to the bundled-component notices. Packages are unsigned. The release workflow attaches them to the tagged GitHub release; native package registry publication is not configured. The maintainer is Primož Ajdišek <bigpod@bigpod.si>.
 
 ## License notices
 
-Every build carries the same four license files beside the executable. Native packages install them in `/usr/share/licenses/s3-browser/`, and portable archives contain them at the top level:
+Every build carries the same four license files beside the executable. Native packages install them in `/usr/share/licenses/objectfilemanager/`, and portable archives contain them at the top level:
 
-- `LICENSE`: S3 Browser's MIT license.
+- `LICENSE`: ObjectFileManager's MIT license.
 - `THIRD_PARTY_NOTICES.txt`: the license and notice files of every npm production dependency in `resources/app.asar`.
 - `LICENSE.electron.txt` and `LICENSES.chromium.html`: the Electron runtime, Chromium, Node.js and their components, as shipped by Electron.
 
@@ -64,6 +72,14 @@ Runtime dependencies are declared in each native recipe. In particular, GTK, NSS
 npm run test:packages          # All formats
 npm run test:packages -- deb   # One format
 ```
+
+To exercise the rename upgrade, download the matching-architecture 1.0.2 release
+packages into `deb/`, `rpm/`, and `alpm/` subdirectories of a temporary directory,
+verify them against that release's `SHA256SUMS`, then run
+`S3_TEST_UPGRADE_DIR=/path/to/old-packages npm run test:packages -- --x64`
+(or `--arm64`). The test installs and launches the old package first, replaces it
+with ObjectFileManager, checks that the old executable is removed and profile
+files survive, then runs the normal startup and removal checks.
 
 This installs the generated package using the distro package manager in a disposable container, letting it resolve the declared dependencies. It checks native metadata, version ordering, launcher/icon paths, executable library resolution, sandbox permissions, and desktop-file validity. It then starts the installed app as an unprivileged user under Xvfb and queries its real renderer through Chrome DevTools to verify the welcome screen, application version, SQLite initialization, and IPC calls.
 
@@ -90,14 +106,14 @@ Only the tag-triggered publication job requests write access. Tag reviewed commi
 The release assets are exactly:
 
 ```text
-s3-browser_VERSION-1_amd64.deb
-s3-browser-VERSION-1.x86_64.rpm
-s3-browser-VERSION-1-x86_64.pkg.tar.zst
-s3-browser-VERSION-linux-x64.tar.gz
-s3-browser_VERSION-1_arm64.deb
-s3-browser-VERSION-1.aarch64.rpm
-s3-browser-VERSION-1-aarch64.pkg.tar.zst
-s3-browser-VERSION-linux-arm64.tar.gz
+objectfilemanager_VERSION-1_amd64.deb
+objectfilemanager-VERSION-1.x86_64.rpm
+objectfilemanager-VERSION-1-x86_64.pkg.tar.zst
+objectfilemanager-VERSION-linux-x64.tar.gz
+objectfilemanager_VERSION-1_arm64.deb
+objectfilemanager-VERSION-1.aarch64.rpm
+objectfilemanager-VERSION-1-aarch64.pkg.tar.zst
+objectfilemanager-VERSION-linux-arm64.tar.gz
 SHA256SUMS
 ```
 

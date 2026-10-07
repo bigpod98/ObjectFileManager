@@ -20,7 +20,9 @@ try:
     # Container-only sandbox override: nested Chromium namespaces are blocked by Docker.
     # Installed launchers never include this flag.
     emulation_flags = ['--no-zygote', '--in-process-gpu'] if os.environ.get('S3_EMULATED') == '1' else []
-    app = subprocess.Popen(['runuser', '-u', 'tester', '--', 'env', 'DISPLAY=:99', '/usr/bin/s3-browser', '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', f'--user-data-dir={profile}'] + emulation_flags, stdout=log, stderr=log, start_new_session=True)
+    executable = os.environ.get('S3_SMOKE_EXECUTABLE', '/usr/bin/objectfilemanager')
+    title = os.environ.get('S3_SMOKE_TITLE', 'ObjectFileManager')
+    app = subprocess.Popen(['runuser', '-u', 'tester', '--', 'env', 'DISPLAY=:99', executable, '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', f'--user-data-dir={profile}'] + emulation_flags, stdout=log, stderr=log, start_new_session=True)
     deadline = time.monotonic() + int(os.environ.get("S3_SMOKE_TIMEOUT", "40"))
     result = None
     while time.monotonic() < deadline:
@@ -29,7 +31,7 @@ try:
         try:
             with urllib.request.urlopen('http://127.0.0.1:9222/json/list', timeout=2) as response:
                 pages = json.load(response)
-            page = next(p for p in pages if p.get('type') == 'page' and p.get('title') == 'S3 Browser')
+            page = next(p for p in pages if p.get('type') == 'page' and p.get('title') == title)
             ws = websocket.create_connection(page['webSocketDebuggerUrl'], timeout=4, suppress_origin=True)
             ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {'expression': '(async () => ({ title: document.querySelector("h1")?.textContent, init: await window.s3.init(), jobs: await window.s3.jobs() }))()', 'awaitPromise': True, 'returnByValue': True}}))
             while True:

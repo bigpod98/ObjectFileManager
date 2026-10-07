@@ -11,6 +11,9 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
+// Keep Electron's storage/keyring identity across the public rename. This also
+// preserves the profile directory and single-instance lock of older releases.
+app.setName("s3-browser");
 const { Queue } = require("./queue.cjs");
 const storage = require("./storage.cjs");
 const downloads = require("./downloads.cjs");
@@ -62,7 +65,7 @@ function getClient(id) {
   if (!p) throw new Error("Connection not found.");
   if (p.locked)
     throw new Error(
-      "Unlock your operating system keyring and restart S3 Browser to use this saved connection.",
+      "Unlock your operating system keyring and restart ObjectFileManager to use this saved connection.",
     );
   const c = storage.client(p);
   clients.set(id, c);
@@ -305,7 +308,7 @@ else
           error: cleanup.error,
         });
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: `s3-browser-failures-${id}.json`,
+        defaultPath: `objectfilemanager-failures-${id}.json`,
         filters: [{ name: "JSON report", extensions: ["json"] }],
       });
       if (result.canceled) return false;
@@ -382,7 +385,7 @@ else
       minWidth: 960,
       minHeight: 680,
       backgroundColor: "#101411",
-      title: "S3 Browser",
+      title: "ObjectFileManager",
       icon: path.join(__dirname, "../assets/icon.png"),
       autoHideMenuBar: true,
       webPreferences: {

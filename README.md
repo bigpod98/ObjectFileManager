@@ -1,4 +1,4 @@
-# S3 Browser
+# ObjectFileManager (OFM)
 
 ### NOTICE: this project is vibecoded mess works for me i hope it works for you write an issue if it doesnt and ill see what i can do, because of that this project has no warranty use it at your own risk
 
@@ -6,25 +6,30 @@ i was migrating a lot of stuff and needed a tool to quickly upload to S3 compati
 
 A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3-compatible endpoints, OpenStack Swift, Azure Blob Storage, and Google Cloud Storage. Browse and organize objects, queue uploads and folder downloads, inspect object versions and metadata, and review one-way folder syncs. Built with Electron, native storage adapters, and a persistent SQLite transfer queue.
 
-![S3 Browser](assets/welcome.png)
+![ObjectFileManager](assets/welcome.png)
 
 ## Install
+
+ObjectFileManager (OFM) was previously named S3 Browser. Starting with 1.0.3,
+packages and the executable are named `objectfilemanager`. Native packages
+replace the old `s3-browser` package. Existing connections, bookmarks, and
+transfer history continue to use the same profile directory and keyring identity.
 
 [Releases](https://github.com/bigpod98/S3Browser/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#github-actions-and-releases) for how releases are built and validated.
 
 Building from source places native Linux packages in `dist/native/`:
 
-| Distribution    | Package                                      | Install                                                                   |
-| --------------- | -------------------------------------------- | ------------------------------------------------------------------------- |
-| Arch / ALPM     | `alpm/s3-browser-0.1.1-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/s3-browser-0.1.1-1-x86_64.pkg.tar.zst` |
-| Debian / Ubuntu | `deb/s3-browser_0.1.1-1_amd64.deb`           | `sudo apt install ./dist/native/deb/s3-browser_0.1.1-1_amd64.deb`         |
-| Fedora / RPM    | `rpm/s3-browser-0.1.1-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/s3-browser-0.1.1-1.x86_64.rpm`        |
+| Distribution    | Package                                             | Install                                                                          |
+| --------------- | --------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Arch / ALPM     | `alpm/objectfilemanager-1.0.3-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/objectfilemanager-1.0.3-1-x86_64.pkg.tar.zst` |
+| Debian / Ubuntu | `deb/objectfilemanager_1.0.3-1_amd64.deb`           | `sudo apt install ./dist/native/deb/objectfilemanager_1.0.3-1_amd64.deb`         |
+| Fedora / RPM    | `rpm/objectfilemanager-1.0.3-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/objectfilemanager-1.0.3-1.x86_64.rpm`        |
 
-After installation, open **S3 Browser** from your application menu or run `s3-browser`. Your connections and transfer history stay in your user profile when the package is removed. See [packaging documentation](packaging/README.md) for build and validation details.
+After installation, open **ObjectFileManager** from your application menu or run `objectfilemanager`. Your connections and transfer history stay in your user profile when the package is removed. See [packaging documentation](packaging/README.md) for build and validation details.
 
 The table shows x86_64 filenames; ARM64 builds use `arm64` for DEB and `aarch64` for RPM/Arch.
 
-A portable alternative is `s3-browser-0.1.1-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `s3-browser` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/s3-browser` can also be launched directly.
+A portable alternative is `objectfilemanager-1.0.3-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `objectfilemanager` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/objectfilemanager` can also be launched directly.
 
 To run from source, install Node.js 22.13 or later and a recent npm:
 
@@ -186,6 +191,6 @@ Not covered by automated tests: live Amazon S3, R2, Ceph, Azure, Google Cloud St
 
 ## License
 
-S3 Browser is released under the [MIT License](LICENSE), copyright 2026 Primož Ajdišek (bigpod).
+ObjectFileManager is released under the [MIT License](LICENSE), copyright 2026 Primož Ajdišek (bigpod).
 
-Builds also contain Electron, Chromium, and npm production dependencies under their own licenses. Portable archives include `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html` beside the executable; native packages also install them in `/usr/share/licenses/s3-browser/`. `THIRD_PARTY_NOTICES.txt` is generated during each build from the locked, installed production dependencies; see [license notices](packaging/README.md#license-notices).
+Builds also contain Electron, Chromium, and npm production dependencies under their own licenses. Portable archives include `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html` beside the executable; native packages also install them in `/usr/share/licenses/objectfilemanager/`. `THIRD_PARTY_NOTICES.txt` is generated during each build from the locked, installed production dependencies; see [license notices](packaging/README.md#license-notices).

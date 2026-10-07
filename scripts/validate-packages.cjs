@@ -21,6 +21,9 @@ for (const format of formats) {
       S3_SMOKE_TIMEOUT: arch.electron === "arm64" ? "180" : "40",
     },
     inputs: [
+      ...(process.env.S3_TEST_UPGRADE_DIR
+        ? [[path.resolve(process.env.S3_TEST_UPGRADE_DIR, format), "/legacy"]]
+        : []),
       [path.join(root, "dist/native", format), "/packages"],
       [path.join(root, "packaging"), "/recipes"],
     ],

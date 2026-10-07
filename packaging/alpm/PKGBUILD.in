@@ -1,5 +1,8 @@
 # Generated from the shared, locally built Electron payload. No install-time downloads.
-pkgname=s3-browser
+pkgname=objectfilemanager
+conflicts=('s3-browser')
+replaces=('s3-browser<1.0.3')
+provides=('s3-browser')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Desktop browser and bulk transfer client for S3, Swift, Azure Blob and GCS storage'
@@ -13,5 +16,5 @@ sha256sums=('@SHA256@')
 
 package() {
   cp -a "$srcdir/payload/." "$pkgdir/"
-  chmod 4755 "$pkgdir/opt/s3-browser/chrome-sandbox"
+  chmod 4755 "$pkgdir/opt/objectfilemanager/chrome-sandbox"
 }

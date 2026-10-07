@@ -89,10 +89,11 @@ button.primary:hover {
   gap: 11px;
   padding: 0 8px 40px;
   font-weight: 650;
-  font-size: 20px;
+  font-size: 14px;
   letter-spacing: -0.7px;
 }
 .brand-icon {
+  flex-shrink: 0;
   background: var(--accent);
   color: #253818;
   font-size: 31px;

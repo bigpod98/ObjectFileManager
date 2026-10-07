@@ -6,14 +6,14 @@ const { execFileSync } = require("node:child_process");
 
 function assetPaths(version) {
   return [
-    `native/deb/s3-browser_${version}-1_amd64.deb`,
-    `native/rpm/s3-browser-${version}-1.x86_64.rpm`,
-    `native/alpm/s3-browser-${version}-1-x86_64.pkg.tar.zst`,
-    `s3-browser-${version}-linux-x64.tar.gz`,
-    `native/deb/s3-browser_${version}-1_arm64.deb`,
-    `native/rpm/s3-browser-${version}-1.aarch64.rpm`,
-    `native/alpm/s3-browser-${version}-1-aarch64.pkg.tar.zst`,
-    `s3-browser-${version}-linux-arm64.tar.gz`,
+    `native/deb/objectfilemanager_${version}-1_amd64.deb`,
+    `native/rpm/objectfilemanager-${version}-1.x86_64.rpm`,
+    `native/alpm/objectfilemanager-${version}-1-x86_64.pkg.tar.zst`,
+    `objectfilemanager-${version}-linux-x64.tar.gz`,
+    `native/deb/objectfilemanager_${version}-1_arm64.deb`,
+    `native/rpm/objectfilemanager-${version}-1.aarch64.rpm`,
+    `native/alpm/objectfilemanager-${version}-1-aarch64.pkg.tar.zst`,
+    `objectfilemanager-${version}-linux-arm64.tar.gz`,
   ];
 }
 async function validate(root, env = process.env) {
@@ -166,7 +166,7 @@ async function publish(root, env = process.env, request = fetch) {
           name: release.tag,
           draft: true,
           prerelease: false,
-          body: `Linux x86_64 and ARM64 packages for S3 Browser ${release.version}.\n\nIncludes DEB, RPM, Arch and a portable archive. Verify downloads with SHA256SUMS.\n\nBuilt from commit ${release.sha}.`,
+          body: `Linux x86_64 and ARM64 packages for ObjectFileManager ${release.version}.\n\nIncludes DEB, RPM, Arch and a portable archive. Verify downloads with SHA256SUMS.\n\nBuilt from commit ${release.sha}.`,
         },
       });
     } catch (error) {

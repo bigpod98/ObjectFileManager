@@ -129,9 +129,9 @@ function externalLicense(p, projectRoot) {
 
 function generate(projectRoot = root, packages = inventory(projectRoot)) {
   const out = [
-    "S3 Browser third-party notices",
+    "ObjectFileManager third-party notices",
     "",
-    "S3 Browser is licensed under the MIT License; see LICENSE. It bundles the",
+    "ObjectFileManager is licensed under the MIT License; see LICENSE. It bundles the",
     "following production dependencies inside resources/app.asar. Each remains",
     "under its own license, reproduced below from the installed package or,",
     "where the package omits it, from the recorded upstream source.",

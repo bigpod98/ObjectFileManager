@@ -1,4 +1,6 @@
-Package: s3-browser
+Package: objectfilemanager
+Conflicts: s3-browser (<< 1.0.3)
+Replaces: s3-browser (<< 1.0.3)
 Version: @VERSION@-1
 Architecture: @DEB_ARCH@
 Maintainer: Primož Ajdišek <bigpod@bigpod.si>

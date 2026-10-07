@@ -175,6 +175,7 @@ async function mainFixture(t, initial = [stored("swift")]) {
   }
   const electron = {
     app: {
+      setName() {},
       requestSingleInstanceLock: () => true,
       whenReady: () => ({
         then: (fn) => {

@@ -1,6 +1,6 @@
 {
-  "name": "s3-browser",
-  "version": "1.0.2",
+  "name": "objectfilemanager",
+  "version": "1.0.3",
   "description": "A desktop browser and durable bulk transfer client for S3-compatible, OpenStack Swift, Azure Blob and Google Cloud Storage",
   "license": "MIT",
   "author": {
@@ -23,6 +23,7 @@
     "dist": "node scripts/package-linux.cjs",
     "pack": "electron-builder --dir",
     "test:desktop": "node test/desktop.cjs",
+    "test:desktop:identity": "node test/desktop-identity.cjs",
     "test:desktop:providers": "node test/desktop-providers.cjs",
     "test:scale": "node test/scale.cjs",
     "format": "prettier --write src test scripts package.json README.md CONTRIBUTING.md docs packaging/README.md .github/workflows",
@@ -34,7 +35,7 @@
   },
   "build": {
     "appId": "com.tuxbase.s3browser",
-    "productName": "S3 Browser",
+    "productName": "ObjectFileManager",
     "files": [
       "src/**/*",
       "package.json",
@@ -49,7 +50,7 @@
       "icon": "assets/icon.png",
       "desktop": {
         "entry": {
-          "Name": "S3 Browser",
+          "Name": "ObjectFileManager",
           "Comment": "Browse and transfer files in S3, Swift, Azure Blob and Google Cloud Storage"
         }
       },

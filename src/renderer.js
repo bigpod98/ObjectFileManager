@@ -673,18 +673,23 @@ $("#details-next").onclick = act(async () => {
   state.detailsOffset += 100;
   await loadDetails();
 });
-(async () => {
-  const initial = await api.init();
-  state.profiles = initial.profiles;
-  $("#remember").checked = initial.secure;
-  $("#keyring-note").textContent = initial.secure
-    ? "Saved credentials are encrypted using your operating system’s secure storage."
-    : "No secure OS keyring detected. Connections can be used for this session without saving credentials.";
-  renderConnections();
-  await loadLocations();
-  $("#queue-auto").checked = (await api["queue:status"]()).auto;
-  await refreshJobs();
-})().catch((e) => toast(e.message));
+// workflows.js supplies loadLocations; wait for both scripts to finish loading.
+window.addEventListener(
+  "DOMContentLoaded",
+  act(async () => {
+    const initial = await api.init();
+    state.profiles = initial.profiles;
+    $("#remember").checked = initial.secure;
+    $("#keyring-note").textContent = initial.secure
+      ? "Saved credentials are encrypted using your operating system’s secure storage."
+      : "No secure OS keyring detected. Connections can be used for this session without saving credentials.";
+    renderConnections();
+    await loadLocations();
+    $("#queue-auto").checked = (await api["queue:status"]()).auto;
+    await refreshJobs();
+  }),
+  { once: true },
+);
 let polling = false;
 setInterval(async () => {
   if (polling) return;

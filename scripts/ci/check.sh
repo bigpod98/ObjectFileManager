@@ -12,5 +12,6 @@ AZURITE_INTEGRATION=1 npm test
 npm run test:desktop:providers
 # Only the disposable root-run CI container disables Chromium's sandbox.
 export S3_TEST_NO_SANDBOX=1
+xvfb-run -a npm run test:desktop:identity
 xvfb-run -a npm run test:desktop
 xvfb-run -a npm run test:desktop:expansion

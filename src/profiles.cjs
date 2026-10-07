@@ -223,7 +223,7 @@ function refreshSwiftToken(profile, token) {
   if (!profile) throw new Error("Connection not found.");
   if (profile.locked)
     throw new Error(
-      "Unlock your operating system keyring and restart S3 Browser before refreshing this connection.",
+      "Unlock your operating system keyring and restart ObjectFileManager before refreshing this connection.",
     );
   if (profile.provider !== "OpenStack Swift")
     throw new Error(

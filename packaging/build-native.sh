@@ -13,7 +13,7 @@ case "$format" in
     ;;
   rpm)
     mkdir -p /build/rpm/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-    rpmbuild -bb --define '_topdir /build/rpm' /input/s3-browser.spec
+    rpmbuild -bb --define '_topdir /build/rpm' /input/objectfilemanager.spec
     cp /build/rpm/RPMS/*/*.rpm /output/
     rpm -qip /output/*.rpm
     ;;

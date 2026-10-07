@@ -37,12 +37,12 @@ if (!process.argv.includes("--skip-bundle"))
 const bundle = path.join(root, `dist/${arch.bundle}`);
 if (!fs.existsSync(path.join(bundle, "resources/app.asar")))
   throw new Error("Build the application first: npm run pack");
-verifyExecutable(path.join(bundle, "s3-browser"), arch);
+verifyExecutable(path.join(bundle, "objectfilemanager"), arch);
 const work = path.join(root, "dist/native");
 fs.mkdirSync(work, { recursive: true });
 const input = fs.mkdtempSync(path.join(work, "input-"));
 const payload = path.join(input, "payload");
-const appDir = path.join(payload, "opt/s3-browser");
+const appDir = path.join(payload, "opt/objectfilemanager");
 fs.mkdirSync(path.dirname(appDir), { recursive: true });
 fs.cpSync(bundle, appDir, { recursive: true });
 fs.chmodSync(path.join(appDir, "chrome-sandbox"), 0o4755);
@@ -54,18 +54,18 @@ function copy(source, target) {
 }
 fs.mkdirSync(path.join(payload, "usr/bin"), { recursive: true });
 fs.symlinkSync(
-  "/opt/s3-browser/s3-browser",
-  path.join(payload, "usr/bin/s3-browser"),
+  "/opt/objectfilemanager/objectfilemanager",
+  path.join(payload, "usr/bin/objectfilemanager"),
 );
 copy(
-  "packaging/s3-browser.desktop",
+  "packaging/objectfilemanager.desktop",
   "usr/share/applications/com.tuxbase.s3browser.desktop",
 );
 copy(
   "assets/icon.png",
   "usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png",
 );
-copy("README.md", "usr/share/doc/s3-browser/README.md");
+copy("README.md", "usr/share/doc/objectfilemanager/README.md");
 // afterPack writes the application license and dependency notices into the
 // bundle; reject bundles built before them or from a different install.
 const { generate, NOTICE_FILE } = require("./third-party-notices.cjs");
@@ -86,8 +86,11 @@ for (const file of [
   "LICENSE.electron.txt",
   "LICENSES.chromium.html",
 ])
-  copy(path.join(bundle, file), `usr/share/licenses/s3-browser/${file}`);
-const copyright = path.join(payload, "usr/share/doc/s3-browser/copyright");
+  copy(path.join(bundle, file), `usr/share/licenses/objectfilemanager/${file}`);
+const copyright = path.join(
+  payload,
+  "usr/share/doc/objectfilemanager/copyright",
+);
 fs.writeFileSync(
   copyright,
   fs.readFileSync("packaging/deb/copyright.in", "utf8").replace(
@@ -115,7 +118,7 @@ if (size.status) throw new Error("Could not calculate installed size");
 render("packaging/deb/control.in", "control", {
   SIZE: size.stdout.split(/\s/)[0],
 });
-render("packaging/rpm/s3-browser.spec.in", "s3-browser.spec");
+render("packaging/rpm/objectfilemanager.spec.in", "objectfilemanager.spec");
 if (formats.includes("alpm")) {
   run("tar", [
     "-czf",
