@@ -66,22 +66,40 @@ copy(
   "usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png",
 );
 copy("README.md", "usr/share/doc/s3-browser/README.md");
-copy(
-  path.join(bundle, "LICENSE.electron.txt"),
-  "usr/share/licenses/s3-browser/LICENSE.electron.txt",
-);
-copy(
-  path.join(bundle, "LICENSES.chromium.html"),
-  "usr/share/licenses/s3-browser/LICENSES.chromium.html",
-);
+// afterPack writes the application license and dependency notices into the
+// bundle; reject bundles built before them or from a different install.
+const { generate, NOTICE_FILE } = require("./third-party-notices.cjs");
+const license = fs.readFileSync("LICENSE", "utf8");
+for (const [file, expected] of [
+  ["LICENSE", license],
+  [NOTICE_FILE, generate(root)],
+]) {
+  const bundled = path.join(bundle, file);
+  if (!fs.existsSync(bundled) || fs.readFileSync(bundled, "utf8") !== expected)
+    throw new Error(
+      `${bundled} is missing or stale. Rebuild the application: npm run pack`,
+    );
+}
+for (const file of [
+  "LICENSE",
+  NOTICE_FILE,
+  "LICENSE.electron.txt",
+  "LICENSES.chromium.html",
+])
+  copy(path.join(bundle, file), `usr/share/licenses/s3-browser/${file}`);
+const copyright = path.join(payload, "usr/share/doc/s3-browser/copyright");
 fs.writeFileSync(
-  path.join(payload, "usr/share/licenses/s3-browser/NOTICE"),
-  "S3 Browser: no application redistribution license has been specified.\nBundled third-party components retain their respective licenses.\nSee the Electron and Chromium notices in this directory.\n",
+  copyright,
+  fs.readFileSync("packaging/deb/copyright.in", "utf8").replace(
+    "@MIT_TEXT@",
+    license
+      .trim()
+      .split("\n")
+      .map((line) => ` ${line || "."}`)
+      .join("\n"),
+  ),
 );
-copy(
-  path.join(payload, "usr/share/licenses/s3-browser/NOTICE"),
-  "usr/share/doc/s3-browser/copyright",
-);
+fs.chmodSync(copyright, 0o644);
 function render(source, target, extra = {}) {
   let content = fs
     .readFileSync(source, "utf8")

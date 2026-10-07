@@ -10,6 +10,16 @@ function unsupported(message) {
     $metadata: { httpStatusCode: 501 },
   });
 }
+function rejectDotSegments(value) {
+  if (
+    String(value)
+      .split("/")
+      .some((part) => part === "." || part === "..")
+  )
+    throw unsupported(
+      "dot path segments ('.' and '..') cannot be preserved safely because intermediaries may normalize them.",
+    );
+}
 function quoted(value) {
   return value ? `"${String(value).replace(/^"|"$/g, "")}"` : undefined;
 }
@@ -98,10 +108,14 @@ function client(profile) {
   let maxFileSize;
   function path(input = {}) {
     let value = base;
-    if (input.Bucket !== undefined)
+    if (input.Bucket !== undefined) {
+      rejectDotSegments(input.Bucket);
       value += `/${encodeURIComponent(input.Bucket)}`;
-    if (input.Key !== undefined)
+    }
+    if (input.Key !== undefined) {
+      rejectDotSegments(input.Key);
       value += `/${String(input.Key).split("/").map(encodeURIComponent).join("/")}`;
+    }
     return value;
   }
   async function request(
@@ -293,6 +307,7 @@ function client(profile) {
     };
     input.Body?.on?.("error", observeError);
     try {
+      const target = path(input);
       if (length !== undefined) {
         const limit = await singlePutLimit(abortSignal);
         if (bodyError) throw bodyError;
@@ -309,7 +324,7 @@ function client(profile) {
       }
       if (buffered && input.ContentLength !== undefined)
         headers["content-length"] = input.ContentLength;
-      const response = await request("PUT", path(input), {
+      const response = await request("PUT", target, {
         headers,
         body: input.Body ?? Buffer.alloc(0),
         abortSignal,
@@ -421,6 +436,10 @@ function client(profile) {
         const raw = String(input.CopySource || "").replace(/^\//, "");
         if (!raw.includes("/") || raw.includes("?"))
           throw unsupported("invalid or versioned copy source.");
+        // CopySource is already URL-encoded; inspect the decoded object name
+        // so encoded dots receive the same guard as ordinary object keys.
+        rejectDotSegments(decodeURIComponent(raw));
+        const target = path(input);
         if (input.IfNoneMatch === "*") {
           await singlePutLimit(abortSignal);
           const sourceHeaders = {};
@@ -465,7 +484,7 @@ function client(profile) {
           headers["if-none-match"] = input.CopySourceIfNoneMatch;
         if (input.MetadataDirective === "REPLACE")
           headers["x-fresh-metadata"] = "true";
-        const response = await request("PUT", path(input), {
+        const response = await request("PUT", target, {
           headers,
           abortSignal,
         });
@@ -506,14 +525,6 @@ function client(profile) {
         );
       const expires = Math.floor(Date.now() / 1000) + expiresIn;
       const target = path(input);
-      if (
-        String(input.Key)
-          .split("/")
-          .some((part) => part === "." || part === "..")
-      )
-        throw unsupported(
-          "temporary links cannot preserve dot path segments in browsers.",
-        );
       // Swift signs the decoded WSGI path, not its percent-encoded URL form.
       const signature = createHmac("sha256", profile.swiftTempUrlKey)
         .update(`GET\n${expires}\n${decodeURIComponent(target)}`)

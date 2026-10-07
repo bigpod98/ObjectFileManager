@@ -2,7 +2,86 @@ const { DatabaseSync } = require("node:sqlite");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID, createHash } = require("node:crypto");
-const { createReadStream } = require("node:fs");
+const { constants } = require("node:fs");
+
+async function validateSourceParents(source, root) {
+  if (root) {
+    const relative = path.relative(root, source);
+    if (
+      !path.isAbsolute(root) ||
+      !path.isAbsolute(source) ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    )
+      throw new Error(
+        "Source is outside its original folder. Create a new batch.",
+      );
+  }
+  // Legacy ordinary uploads have no root. Check the entire absolute ancestor
+  // chain for them too, including parents above the selected folder.
+  for (
+    let parent = path.dirname(path.resolve(source));
+    ;
+    parent = path.dirname(parent)
+  ) {
+    const stat = await fs.lstat(parent);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error(
+        "Source parent changed or became a symbolic link. Create a new batch.",
+      );
+    if (parent === path.dirname(parent)) break;
+  }
+}
+
+async function validateUploadSource(entry) {
+  if (!entry.source) throw new Error("Source is missing. Create a new batch.");
+  await validateSourceParents(entry.source, entry.root);
+  const stat = await fs.lstat(entry.source);
+  if (
+    stat.isSymbolicLink() ||
+    (entry.directory
+      ? !stat.isDirectory()
+      : !stat.isFile() ||
+        stat.size !== entry.size ||
+        (entry.mtime != null && stat.mtimeMs !== entry.mtime))
+  )
+    throw new Error(
+      "Source changed since scanning. Create a new batch for this file.",
+    );
+  return stat;
+}
+
+const sameSource = (a, b) =>
+  ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(
+    (key) => a[key] === b[key],
+  );
+
+async function openUploadSource(entry) {
+  const before = await validateUploadSource(entry);
+  const handle = await fs.open(
+    entry.source,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const opened = await handle.stat();
+    // O_NOFOLLOW guards the final component. Checking again after open also
+    // catches ancestor replacements, and all reads use this validated handle.
+    const after = await validateUploadSource(entry);
+    if (
+      !opened.isFile() ||
+      !sameSource(before, opened) ||
+      !sameSource(opened, after)
+    )
+      throw new Error(
+        "Source changed while opening. Create a new batch for this file.",
+      );
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
 
 function abortError() {
   return Object.assign(new Error("Transfer aborted."), { name: "AbortError" });
@@ -184,7 +263,7 @@ class Queue {
       );
     this.configure(id, options);
     const insert = this.db.prepare(
-      "INSERT INTO entries(job,source,key,size,mtime,directory) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO entries(job,source,key,size,mtime,directory,root) VALUES(?,?,?,?,?,?,?)",
     );
     let batch = [],
       warnings = 0;
@@ -199,12 +278,14 @@ class Queue {
         throw e;
       }
     };
-    const walk = async (source, key) => {
+    const walk = async (source, key, root) => {
+      await validateSourceParents(source, root);
       const stat = await fs.lstat(source);
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
         warnings++;
         return;
       }
+      root ||= stat.isDirectory() ? source : path.dirname(source);
       if (Buffer.byteLength(key + (stat.isDirectory() ? "/" : "")) > 1024)
         throw new Error(`S3 key exceeds 1,024 bytes: ${key}`);
       batch.push([
@@ -214,17 +295,32 @@ class Queue {
         stat.isDirectory() ? 0 : stat.size,
         stat.mtimeMs,
         +stat.isDirectory(),
+        root,
       ]);
       if (batch.length >= 250) flush();
       if (stat.isDirectory()) {
         const dir = await fs.opendir(source);
         for await (const entry of dir)
-          await walk(path.join(source, entry.name), `${key}/${entry.name}`);
+          await walk(
+            path.join(source, entry.name),
+            `${key}/${entry.name}`,
+            root,
+          );
+        await validateSourceParents(source, root);
+        const after = await fs.lstat(source);
+        if (
+          !after.isDirectory() ||
+          stat.dev !== after.dev ||
+          stat.ino !== after.ino
+        )
+          throw new Error("Source changed while scanning. Create a new batch.");
       }
     };
     try {
-      for (const source of sources)
+      for (const selected of sources) {
+        const source = path.resolve(selected);
         await walk(source, prefix + path.basename(source));
+      }
       flush();
       this.db
         .prepare("UPDATE jobs SET state='paused',warnings=? WHERE id=?")
@@ -451,46 +547,7 @@ class Queue {
           for (let retry = 0; ; retry++) {
             controller.signal.throwIfAborted();
             if (job.kind === "upload") {
-              if (entry.root) {
-                const relative = path.relative(entry.root, entry.source);
-                if (
-                  !path.isAbsolute(entry.root) ||
-                  !path.isAbsolute(entry.source) ||
-                  relative === ".." ||
-                  relative.startsWith(`..${path.sep}`) ||
-                  path.isAbsolute(relative)
-                ) {
-                  throw new Error(
-                    "Source is outside its original folder. Create a new batch.",
-                  );
-                }
-                for (
-                  let parent = path.dirname(entry.source);
-                  ;
-                  parent = path.dirname(parent)
-                ) {
-                  const stat = await fs.lstat(parent);
-                  if (!stat.isDirectory() || stat.isSymbolicLink())
-                    throw new Error(
-                      "Source parent changed or became a symbolic link. Create a new batch.",
-                    );
-                  if (parent === path.dirname(parent)) break;
-                }
-              }
-              if (!entry.directory || entry.root) {
-                const stat = await fs.lstat(entry.source);
-                if (
-                  entry.directory
-                    ? !stat.isDirectory()
-                    : !stat.isFile() ||
-                      stat.size !== entry.size ||
-                      stat.mtimeMs !== entry.mtime
-                ) {
-                  throw new Error(
-                    "Source changed since scanning. Create a new batch for this file.",
-                  );
-                }
-              }
+              await validateUploadSource(entry);
             }
             if (
               job.kind === "upload" &&
@@ -502,10 +559,16 @@ class Queue {
               if (!entry.sha256) {
                 const hash = createHash("sha256");
                 if (!entry.directory) {
-                  for await (const chunk of createReadStream(entry.source, {
-                    signal: controller.signal,
-                  }))
-                    hash.update(chunk);
+                  const handle = await openUploadSource(entry);
+                  try {
+                    for await (const chunk of handle.createReadStream({
+                      autoClose: false,
+                      signal: controller.signal,
+                    }))
+                      hash.update(chunk);
+                  } finally {
+                    await handle.close();
+                  }
                 }
                 entry.sha256 = hash.digest("base64");
               }
@@ -681,4 +744,9 @@ class Queue {
     this.db.prepare("DELETE FROM jobs WHERE id=?").run(id);
   }
 }
-module.exports = { Queue, RateLimiter };
+module.exports = {
+  Queue,
+  RateLimiter,
+  validateUploadSource,
+  openUploadSource,
+};

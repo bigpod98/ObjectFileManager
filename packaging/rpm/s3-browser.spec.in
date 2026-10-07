@@ -5,8 +5,8 @@
 Name: s3-browser
 Version: @VERSION@
 Release: 1
-Summary: Desktop browser and bulk uploader for S3-compatible storage
-License: LicenseRef-Unknown
+Summary: Desktop browser and bulk transfer client for object storage
+License: MIT
 Packager: Primož Ajdišek <bigpod@bigpod.si>
 BuildArch: @NATIVE_ARCH@
 AutoReqProv: no
@@ -17,8 +17,10 @@ Requires: mesa-libgbm, expat, libxcb, libxkbcommon, systemd-libs, alsa-lib, glib
 Recommends: gnome-keyring
 
 %description
-Browse Amazon S3, Cloudflare R2, Ceph, MinIO, and custom S3 endpoints.
-Upload entire folder trees using a persistent queue with pause and retry.
+Browse Amazon S3, S3-compatible services, OpenStack Swift, Azure Blob Storage
+and Google Cloud Storage.
+Upload and download folder trees through a persistent queue with pause and
+retry, and review copies, moves, deletions and one-way folder syncs.
 
 %prep
 # The shared npm build generates the Electron application payload.

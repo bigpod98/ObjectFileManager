@@ -1,10 +1,19 @@
 # Arch's official Docker image is x86_64 only. Bootstrap the ARM port from its
-# upstream root filesystem over HTTPS, then use its signed package repositories.
+# upstream root filesystem, then use its signed package repositories.
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS rootfs
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl libarchive-tools
-RUN mkdir /rootfs && curl --fail --silent --show-error --location --retry 3 https://de3.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz -o /rootfs.tar.gz \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gpg gpgv libarchive-tools
+# The rootfs supplies the pacman keyring that every later package check relies
+# on, so it is extracted only after its upstream detached signature verifies.
+# The vendored key must have the Arch Linux ARM Build System fingerprint
+# published at https://archlinuxarm.org/about/package-signing.
+COPY alpm/archlinuxarm-builder.asc alpm/verify-signature.sh /verify/
+ARG ROOTFS_URL=https://de3.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+RUN curl --fail --silent --show-error --location --retry 3 "$ROOTFS_URL" -o /rootfs.tar.gz \
+    && curl --fail --silent --show-error --location --retry 3 "$ROOTFS_URL.sig" -o /rootfs.tar.gz.sig \
+    && bash /verify/verify-signature.sh /verify/archlinuxarm-builder.asc 68B3537F39A313B3E574D06777193F152BDBE6A6 /rootfs.tar.gz /rootfs.tar.gz.sig \
+    && mkdir /rootfs \
     && bsdtar -xpf /rootfs.tar.gz -C /rootfs --exclude './dev/*' --exclude './boot/*' \
-    && rm /rootfs.tar.gz
+    && rm /rootfs.tar.gz /rootfs.tar.gz.sig
 FROM scratch
 COPY --from=rootfs /rootfs/ /
 # QEMU user emulation cannot provide pacman's Landlock download sandbox.

@@ -123,6 +123,13 @@ function client(profile, createSwift) {
       );
     const storageUrl = endpoint.url.replace(/\/+$/, "");
     if (
+      new URL(url).protocol === "https:" &&
+      new URL(storageUrl).protocol === "http:"
+    )
+      throw new Error(
+        "Keystone authenticated over HTTPS but returned an HTTP Swift endpoint. Refusing to send the authentication token over an insecure connection.",
+      );
+    if (
       session &&
       (session.endpoint !== storageUrl || project !== data.project.id)
     )

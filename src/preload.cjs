@@ -13,7 +13,6 @@ const channels = [
   "pause",
   "retry",
   "remove",
-  "download",
   "download:queue",
   "folder:create",
   "operations:preview",

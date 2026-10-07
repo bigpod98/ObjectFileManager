@@ -12,7 +12,8 @@ const {
   DeleteBucketCommand,
   ListMultipartUploadsCommand,
 } = require("@aws-sdk/client-s3");
-const { client, browse, transfer, download } = require("../src/storage.cjs");
+const { client, browse, transfer } = require("../src/storage.cjs");
+const downloads = require("../src/downloads.cjs");
 const { Queue } = require("../src/queue.cjs");
 test(
   "S3 integration: folder tree, multipart, skips, replacements, download and pagination",
@@ -94,10 +95,22 @@ test(
       }),
     );
     assert.equal(await content.Body.transformToString(), "hello world");
-    const target = path.join(root, "download.bin");
-    await download(s3, bucket, "backup/Source/large.bin", target);
+    const destination = path.join(root, "download");
+    await fs.mkdir(destination);
+    const [downloadEntry] = await downloads.plan(s3, {
+      bucket,
+      prefix: "backup/Source/",
+      selection: [{ key: "backup/Source/large.bin" }],
+      destination,
+    });
+    await downloads.transfer(
+      s3,
+      { bucket, overwrite: false },
+      downloadEntry,
+      new AbortController().signal,
+    );
     assert.deepEqual(
-      await fs.readFile(target),
+      await fs.readFile(downloadEntry.source),
       Buffer.alloc(17 * 1024 * 1024, 42),
     );
     const again = await q.scan(options);

@@ -27,7 +27,7 @@ npm run dist:portable -- --x64 --arm64 --publish never
 
 Cross-architecture package containers require QEMU/binfmt support on the Docker host. The release workflow configures this automatically. ARM64 uses `dist/linux-arm64-unpacked`; x86_64 uses `dist/linux-unpacked`. Node/Electron's `x64` maps to Debian `amd64` and RPM/ALPM `x86_64`; `arm64` maps to Debian `arm64` and RPM/ALPM `aarch64`. Unknown architectures are rejected.
 
-Arch Linux ARM uses the [upstream AArch64 root filesystem](https://archlinuxarm.org/platforms/armv8/generic), fetched over HTTPS from an upstream mirror, and its signed package repositories. Both Arch variants are rolling distributions; `.BUILDINFO` records each package's build environment.
+Arch Linux ARM uses the [upstream AArch64 root filesystem](https://archlinuxarm.org/platforms/armv8/generic) and its signed package repositories. The root filesystem supplies the pacman keyring that later package checks rely on, so `alpm/verify-signature.sh` checks the upstream detached signature before extraction. It accepts only the vendored `alpm/archlinuxarm-builder.asc` key with primary fingerprint `68B3537F39A313B3E574D06777193F152BDBE6A6`, the Arch Linux ARM Build System key [published by the project](https://archlinuxarm.org/about/package-signing). A modified tarball or a signature from another key stops the image build. The `latest` tarball is still a moving input: verification proves that upstream signed it, but not which release a mirror serves, so an older signed tarball would also be accepted before `pacman -Syu` upgrades it. A revoked or rotated upstream key requires updating the vendored key and pinned fingerprint. Both Arch variants are rolling distributions; `.BUILDINFO` records each package's build environment.
 
 Package versions use the application version plus package release `1`, for example `0.1.0-1`. Stable `major.minor.patch` versions are required. Prerelease/daily version conversion is deliberately not implemented. Native version comparison checks confirm that increasing the package release upgrades the preceding release.
 
@@ -37,12 +37,24 @@ Package versions use the application version plus package release `1`, for examp
 - `/usr/bin/s3-browser`: symlink to the executable.
 - `/usr/share/applications/com.tuxbase.s3browser.desktop`: application menu entry.
 - `/usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png`: application icon.
-- `/usr/share/doc/s3-browser/`: documentation and license notice.
-- `/usr/share/licenses/s3-browser/`: bundled Electron/Chromium notices.
+- `/usr/share/doc/s3-browser/`: README and the Debian-format `copyright` file.
+- `/usr/share/licenses/s3-browser/`: `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html`, also present in `/opt/s3-browser/`.
 
 Files are root-owned. The Chromium sandbox helper is root-owned mode `4755`, as required for its setuid fallback. The installed launcher does not disable sandboxing. The app uses the desktop OS keyring if available; `gnome-keyring` is recommended/optional, rather than required for session-only connections.
 
-The application has no selected redistribution license, so the RPM and ALPM metadata use `LicenseRef-Unknown`. Packages are unsigned. The release workflow attaches them to the tagged Forgejo release; native package registry publication is not configured. Maintainer metadata follows the user's existing `usageSoftware` Debian package.
+S3 Browser is MIT-licensed. RPM and ALPM metadata declare `MIT` for the project; Debian's `copyright` file declares MIT for the project and points to the bundled-component notices. Packages are unsigned. The release workflow attaches them to the tagged Forgejo release; native package registry publication is not configured. The maintainer is Primož Ajdišek <bigpod@bigpod.si>.
+
+## License notices
+
+Every build carries the same four license files beside the executable. Native packages install them in `/usr/share/licenses/s3-browser/`, and portable archives contain them at the top level:
+
+- `LICENSE`: S3 Browser's MIT license.
+- `THIRD_PARTY_NOTICES.txt`: the license and notice files of every npm production dependency in `resources/app.asar`.
+- `LICENSE.electron.txt` and `LICENSES.chromium.html`: the Electron runtime, Chromium, Node.js and their components, as shipped by Electron.
+
+The project license does not relicense bundled components. `scripts/third-party-notices.cjs` runs as electron-builder's `afterPack` hook. It takes production packages from `package-lock.json` and requires each installed version to match. It copies their `LICENSE`, `LICENCE`, `COPYING`, `NOTICE`, and `COPYRIGHT` files verbatim, in a deterministic order. The hook fails if `app.asar` contains a package version missing from the notices. `npm run dist:packages` regenerates the notices and refuses a bundle whose copy is missing or stale.
+
+A few packages publish no license file. For these, the generator accepts a README license section only when it contains both a copyright notice and the license grant. Otherwise it uses a reviewed upstream text recorded for that exact package version in `licenses/upstream.json`, with its source commit, provenance, and SHA-256. Any other package without a license file stops the build. After dependency changes, review the new package's upstream license and add an entry rather than substituting a generic template. The tests also fail on entries that no longer match a bundled package version. Run `node scripts/third-party-notices.cjs` to print the current notices.
 
 Runtime dependencies are declared in each native recipe. In particular, GTK, NSS, ALSA, X11, GBM, and secret-storage libraries are system dependencies; application code and the Electron runtime remain bundled. The recipes retain the prebuilt Electron binary without stripping or generating duplicate debug packages.
 
@@ -61,10 +73,21 @@ The container smoke test uses `--no-sandbox` because Docker restricts nested Chr
 
 ## Forgejo CI and releases
 
-The workflows in `.forgejo/workflows/` follow this account's `docker` runner convention. They target an x86_64 Docker host and use a `node:22-bookworm` job container and a disposable MinIO service, with no external storage credentials. The runner must support Forgejo service `cmd` and allow the release job to access a Docker daemon with privileged QEMU/binfmt setup. Package containers receive their inputs through `docker cp`, so the job workspace does not need to exist at the same path on the daemon host. Workflow syntax follows the [Forgejo Actions reference](https://forgejo.org/docs/latest/user/actions/reference/).
+The workflows in `.forgejo/workflows/` run on runners with the `docker` label. They target an x86_64 Docker host and use a `node:22-bookworm` job container, with no external storage credentials. Each job builds MinIO from a pinned upstream commit with Go 1.25.5, installs Azurite 3.35.0, and runs the checks through `scripts/ci/with-test-services.sh`, which starts fresh loopback services for the job. The release job must also be able to reach a Docker daemon and set up privileged QEMU/binfmt. Package containers receive their inputs through `docker cp`, so the job workspace does not need to exist at the same path on the daemon host. Workflow syntax follows the [Forgejo Actions reference](https://forgejo.org/docs/latest/user/actions/reference/).
 
-- **CI** runs on every branch push, pull request and manual dispatch. It installs locked dependencies, checks formatting, runs the backend suite against MinIO, runs both Electron suites under Xvfb, and builds x86_64 and ARM64 Linux application bundles.
+- **CI** runs on every branch push, pull request and manual dispatch. It installs locked dependencies, checks formatting, runs the backend suite against MinIO and Azurite, runs the provider form smoke test and both Electron suites under Xvfb, and builds x86_64 and ARM64 Linux application bundles.
 - **Release** runs only on a pushed `vMAJOR.MINOR.PATCH` tag. It requires the tag, checked-out commit, event commit, `package.json` and `package-lock.json` to agree. Prerelease tags are rejected because native package version conversion is not implemented. It repeats the checks, builds portable archives for both architectures, builds DEB/RPM/Arch from each corresponding unpacked runtime, validates installation/startup/removal for each native package, and smoke-tests the bundled application.
+
+### Untrusted pull requests and runner isolation
+
+CI runs for pull requests, including those from forks. The job runs the contributed code: dependency install scripts, tests, and electron-builder hooks. Job containers isolate only as much as the runner host is configured to. This repository cannot verify or enforce those host settings. Before running CI for untrusted contributions, the instance or runner administrator should confirm that:
+
+- workflows from forks or new contributors require approval if the instance supports it, and maintainers review workflow and script changes before approving;
+- jobs receive no Docker socket, privileged mode, or host mounts. The CI job does not need Docker; only the release job uses a daemon and privileged QEMU setup;
+- untrusted jobs do not share a persistent host, Docker daemon, or caches with release jobs, or the runner is recreated between jobs;
+- no repository secrets are exposed to pull request runs. Only the tag-triggered release job uses `RELEASE_TOKEN`.
+
+Both workflows use the existing `docker` runner label. If the instance provides separately isolated runners, point the CI job at them with `runs-on`. The release workflow runs the tagged commit's code with publication credentials, so tag only reviewed commits.
 
 The release assets are exactly:
 

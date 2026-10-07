@@ -4,7 +4,10 @@ const http = require("node:http");
 const { Readable } = require("node:stream");
 const { ListBucketsCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { client } = require("../src/providers/swift.cjs");
-const { tokenUrl } = require("../src/providers/keystone.cjs");
+const {
+  tokenUrl,
+  client: keystoneClient,
+} = require("../src/providers/keystone.cjs");
 
 async function fixture(t, options = {}) {
   const calls = { auth: [], storage: [] };
@@ -123,6 +126,93 @@ test("Keystone shares authentication, selects the region, and uses the existing 
     ),
   );
   assert.equal(swift.capabilities.conditionalDelete, false);
+});
+
+test("HTTPS Keystone rejects an HTTP catalog endpoint before any storage request", async (t) => {
+  const { swift, calls, origin } = await fixture(t, {
+    profile: { authUrl: "https://identity.example.test/v3" },
+  });
+  const fetch = t.mock.method(globalThis, "fetch", async (url) => {
+    assert.equal(url, "https://identity.example.test/v3/auth/tokens");
+    return new Response(
+      JSON.stringify({
+        token: {
+          expires_at: new Date(Date.now() + 3600000).toISOString(),
+          project: { id: "project" },
+          catalog: [
+            {
+              type: "object-store",
+              endpoints: [
+                {
+                  interface: "public",
+                  region: "RegionOne",
+                  url: `${origin}/v1/AUTH_project`,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      { status: 201, headers: { "x-subject-token": "secret-token" } },
+    );
+  });
+  await assert.rejects(swift.send(new ListBucketsCommand({})), (error) => {
+    assert.match(error.message, /HTTPS.*HTTP Swift endpoint/);
+    assert.ok(!error.message.includes("secret-token"));
+    return true;
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(calls.storage.length, 0);
+});
+
+test("Keystone permits HTTPS storage and explicitly configured HTTP deployments", async (t) => {
+  for (const [authProtocol, storageProtocol] of [
+    ["https", "https"],
+    ["http", "http"],
+    ["http", "https"],
+  ]) {
+    await t.test(
+      `${authProtocol} authentication to ${storageProtocol} storage`,
+      async (t) => {
+        const endpoint = `${storageProtocol}://storage.example.test/v1/AUTH_project`;
+        t.mock.method(
+          globalThis,
+          "fetch",
+          async () =>
+            new Response(
+              JSON.stringify({
+                token: {
+                  expires_at: new Date(Date.now() + 3600000).toISOString(),
+                  project: { id: "project" },
+                  catalog: [
+                    {
+                      type: "object-store",
+                      endpoints: [{ interface: "public", url: endpoint }],
+                    },
+                  ],
+                },
+              }),
+              { status: 201, headers: { "x-subject-token": "token" } },
+            ),
+        );
+        let created = 0;
+        const swift = keystoneClient(
+          { authUrl: `${authProtocol}://identity.example.test/v3` },
+          (session) => {
+            created++;
+            assert.equal(session.endpoint, endpoint);
+            assert.equal(session.swiftToken, "token");
+            return { send: async () => ({ Buckets: [] }), destroy() {} };
+          },
+        );
+        t.after(() => swift.destroy());
+        assert.deepEqual(await swift.send(new ListBucketsCommand({})), {
+          Buckets: [],
+        });
+        assert.equal(created, 1);
+      },
+    );
+  }
 });
 
 test("Keystone refreshes expired tokens and retries an unauthorized read once", async (t) => {

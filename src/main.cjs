@@ -20,10 +20,19 @@ const { Workspace } = require("./workspace.cjs");
 const {
   normalizeProfile,
   publicProfile,
-  serializeProfile,
-  restoreProfile,
   refreshSwiftToken,
 } = require("./profiles.cjs");
+const {
+  JsonFile,
+  serialMutations,
+  decodeProfiles,
+  encodeProfiles,
+  cleanLocation,
+  decodeLocations,
+  withoutProfile,
+} = require("./local-state.cjs");
+const mutateLocalState = serialMutations();
+let profileFile;
 const refreshingProfiles = new Set();
 const removingProfiles = new Set();
 let win,
@@ -59,15 +68,18 @@ function getClient(id) {
   clients.set(id, c);
   return c;
 }
-async function persistProfiles() {
-  const data = profiles
-    .filter((p) => p.remember)
-    .map((p) => serializeProfile(p, safeStorage));
-  const target = profilePath();
-  await fs.writeFile(`${target}.tmp`, JSON.stringify(data), { mode: 0o600 });
-  await fs.rename(`${target}.tmp`, target);
+async function persistProfiles(next) {
+  await profileFile.save(encodeProfiles(next, safeStorage));
+  profiles = next;
 }
 function handle(name, fn) {
+  if (
+    name.startsWith("connection:") ||
+    ["locations:bookmark", "locations:visit"].includes(name)
+  ) {
+    const operation = fn;
+    fn = (...args) => mutateLocalState(() => operation(...args));
+  }
   ipcMain.handle(name, async (event, ...args) => {
     if (
       event.sender !== win.webContents ||
@@ -86,14 +98,13 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else
   app.whenReady().then(async () => {
     await fs.mkdir(app.getPath("userData"), { recursive: true, mode: 0o700 });
-    try {
-      profiles = JSON.parse(await fs.readFile(profilePath(), "utf8")).map((p) =>
-        restoreProfile(p, safeStorage),
-      );
-    } catch (e) {
-      if (e.code !== "ENOENT")
-        dialog.showErrorBox("Could not read connections", e.message);
-    }
+    profileFile = new JsonFile(profilePath(), {
+      report: (message) =>
+        dialog.showErrorBox("Could not read connections", message),
+    });
+    profiles = await profileFile.load([], (data) =>
+      decodeProfiles(data, safeStorage),
+    );
     queue = new Queue(
       path.join(app.getPath("userData"), "transfers.sqlite"),
       (client, job, entry, signal, progress) =>
@@ -114,57 +125,40 @@ else
       }
     });
     const locationsPath = path.join(app.getPath("userData"), "locations.json");
-    let locations = { bookmarks: [], recent: [] };
-    try {
-      locations = JSON.parse(await fs.readFile(locationsPath, "utf8"));
-    } catch (e) {
-      if (e.code !== "ENOENT")
-        dialog.showErrorBox("Could not read saved locations", e.message);
-    }
-    const locationKey = (l) =>
-      JSON.stringify([l.profile, l.bucket, l.prefix || ""]);
-    let locationsWrite = Promise.resolve();
-    const saveLocations = () => {
-      const data = JSON.stringify(locations);
-      locationsWrite = locationsWrite
-        .catch(() => {})
-        .then(async () => {
-          await fs.writeFile(`${locationsPath}.tmp`, data, { mode: 0o600 });
-          await fs.rename(`${locationsPath}.tmp`, locationsPath);
-        });
-      return locationsWrite;
+    const locationFile = new JsonFile(locationsPath, {
+      report: (message) =>
+        dialog.showErrorBox("Could not read saved locations", message),
+    });
+    let locations = await locationFile.load(
+      { bookmarks: [], recent: [] },
+      decodeLocations,
+    );
+    const locationKey = (l) => JSON.stringify([l.profile, l.bucket, l.prefix]);
+    const saveLocations = async (next) => {
+      await locationFile.save(next);
+      locations = next;
     };
     handle("locations:get", () => locations);
     handle("locations:bookmark", async (location) => {
-      getClient(location.profile);
-      const clean = {
-        profile: location.profile,
-        bucket: location.bucket,
-        prefix: location.prefix || "",
-      };
+      const clean = cleanLocation(location);
+      getClient(clean.profile);
       const key = locationKey(clean);
-      if (locations.bookmarks.some((l) => locationKey(l) === key))
-        locations.bookmarks = locations.bookmarks.filter(
-          (l) => locationKey(l) !== key,
-        );
-      else locations.bookmarks.push(clean);
-      await saveLocations();
+      const bookmarks = locations.bookmarks.some((l) => locationKey(l) === key)
+        ? locations.bookmarks.filter((l) => locationKey(l) !== key)
+        : [...locations.bookmarks, clean];
+      await saveLocations({ ...locations, bookmarks });
       return locations;
     });
     handle("locations:visit", async (location) => {
-      getClient(location.profile);
-      const clean = {
-        profile: location.profile,
-        bucket: location.bucket,
-        prefix: location.prefix || "",
-      };
-      locations.recent = [
+      const clean = cleanLocation(location);
+      getClient(clean.profile);
+      const recent = [
         clean,
         ...locations.recent.filter(
           (l) => locationKey(l) !== locationKey(clean),
         ),
       ].slice(0, 20);
-      await saveLocations();
+      await saveLocations({ ...locations, recent });
       return locations;
     });
     handle("init", () => ({
@@ -178,13 +172,7 @@ else
         throw new Error(
           "A secure OS keyring is unavailable. Uncheck “Remember credentials” to connect for this session.",
         );
-      profiles.push(profile);
-      try {
-        await persistProfiles();
-      } catch (e) {
-        profiles.pop();
-        throw e;
-      }
+      await persistProfiles([...profiles, profile]);
       return publicProfiles();
     });
     handle("connection:refresh-swift", async ({ id, token } = {}) => {
@@ -213,12 +201,8 @@ else
           "Pause this connection’s active transfer batch before refreshing its token.",
         );
       refreshingProfiles.add(id);
-      profiles = profiles.map((p) => (p.id === id ? updated : p));
       try {
-        await persistProfiles();
-      } catch (error) {
-        profiles = profiles.map((p) => (p.id === id ? previous : p));
-        throw error;
+        await persistProfiles(profiles.map((p) => (p.id === id ? updated : p)));
       } finally {
         refreshingProfiles.delete(id);
       }
@@ -238,13 +222,32 @@ else
       )
         throw new Error("Remove unfinished batches for this connection first.");
       removingProfiles.add(id);
-      const previous = profiles;
-      profiles = profiles.filter((p) => p.id !== id);
+      const previousLocations = locations;
+      let recovery,
+        cleaned = false;
       try {
-        await persistProfiles();
-      } catch (e) {
-        profiles = previous;
-        throw e;
+        // The files cannot be renamed atomically together. Keep a recovery copy
+        // until both writes succeed, including if restoring locations fails.
+        const nextLocations = withoutProfile(locations, id);
+        if (JSON.stringify(nextLocations) !== JSON.stringify(locations)) {
+          recovery = await locationFile.recoveryCopy(previousLocations);
+          await saveLocations(nextLocations);
+          cleaned = true;
+        }
+        await persistProfiles(profiles.filter((p) => p.id !== id));
+        await locationFile.discardRecovery(recovery);
+      } catch (error) {
+        if (cleaned) {
+          try {
+            await saveLocations(previousLocations);
+          } catch {
+            throw new Error(
+              `Connection was not removed. Saved locations could not be restored; recover them from ${recovery}.`,
+            );
+          }
+        }
+        await locationFile.discardRecovery(recovery);
+        throw error;
       } finally {
         removingProfiles.delete(id);
       }
@@ -373,14 +376,6 @@ else
       return workspace.compare({ ...options, source: result.filePaths[0] });
     });
     handle("sync:apply", (token) => workspace.apply(token));
-    handle("download", async (id, bucket, key) => {
-      const result = await dialog.showSaveDialog(win, {
-        defaultPath: path.basename(key),
-      });
-      if (result.canceled) return false;
-      await storage.download(getClient(id), bucket, key, result.filePath);
-      return true;
-    });
     win = new BrowserWindow({
       width: 1320,
       height: 880,

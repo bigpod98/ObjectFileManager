@@ -99,11 +99,11 @@ async function complete(workspace, id) {
   await workspace.finishing;
 }
 
-function job(queue, key) {
+function job(queue, key, source = "") {
   return queue.createJob({
     profile: "profile",
     bucket: "bucket",
-    entries: [{ source: "", key: `${key}/`, size: 0, directory: true }],
+    entries: [{ source, key: `${key}/`, size: 0, directory: true }],
   });
 }
 
@@ -130,8 +130,8 @@ test("automatic progression requires opt-in and runs pending batches", async (t)
   const f = await fixture(t, async (_, batch) => {
     calls.push(batch.id);
   });
-  const first = job(f.queue, "first");
-  const second = job(f.queue, "second");
+  const first = job(f.queue, "first", f.source);
+  const second = job(f.queue, "second", f.source);
   await f.workspace.advance();
   assert.deepEqual(calls, []);
   await complete(f.workspace, first);
@@ -162,8 +162,8 @@ test("pause aborts the current transfer and disables automatic progression", asy
       }),
     );
   });
-  const first = job(f.queue, "first");
-  job(f.queue, "second");
+  const first = job(f.queue, "first", f.source);
+  job(f.queue, "second", f.source);
   f.workspace.auto = true;
   await f.workspace.start(first);
   await until(() => calls.length === 1);

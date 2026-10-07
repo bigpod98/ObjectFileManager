@@ -22,8 +22,12 @@ const path = require("node:path");
     await expect(
       page.getByRole("heading", { name: "Your files. Any cloud." }),
     ).toBeVisible();
-    await fs.mkdir("assets", { recursive: true });
-    await page.screenshot({ path: "assets/welcome.png" });
+    const screenshots =
+      process.env.S3_TEST_REFRESH_ASSETS === "1"
+        ? "assets"
+        : "test-results/desktop";
+    await fs.mkdir(screenshots, { recursive: true });
+    await page.screenshot({ path: path.join(screenshots, "welcome.png") });
     await page.getByRole("button", { name: "Connect your storage" }).click();
     await expect(page.locator("#region")).toHaveValue("auto");
     await page.locator("#provider").selectOption("Ceph");
@@ -90,7 +94,7 @@ const path = require("node:path");
           .click();
         await expect(page.locator("#files")).toContainText("2026");
         await page.locator("#breadcrumbs button").first().click();
-        await page.screenshot({ path: "assets/browser.png" });
+        await page.screenshot({ path: path.join(screenshots, "browser.png") });
         const source = path.join(root, "Upload sample");
         await fs.mkdir(path.join(source, "empty"), { recursive: true });
         await fs.writeFile(
@@ -117,7 +121,9 @@ const path = require("node:path");
           timeout: 30000,
         });
         await expect(page.locator(".job-stats")).toContainText("3 / 3 objects");
-        await page.screenshot({ path: "assets/transfers.png" });
+        await page.screenshot({
+          path: path.join(screenshots, "transfers.png"),
+        });
         keys.push(
           "Upload sample/",
           "Upload sample/empty/",

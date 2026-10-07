@@ -1,5 +1,7 @@
 // Opt in with AZURITE_INTEGRATION=1 node --test test/azure-integration.test.cjs.
-// Requires Docker and pulls/uses Microsoft's disposable local Blob emulator.
+// AZURITE_TEST_ENDPOINT selects an external disposable emulator (including its
+// account path); otherwise Docker starts a local emulator. Optional credentials:
+// AZURITE_TEST_ACCOUNT_NAME and AZURITE_TEST_ACCOUNT_KEY.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFile } = require("node:child_process");
@@ -31,34 +33,48 @@ test(
   { skip: process.env.AZURITE_INTEGRATION !== "1", timeout: 120000 },
   async (t) => {
     const containerName = `s3browser-azurite-${randomUUID()}`;
-    const accountName = "s3browsertest";
-    const accountKey = Buffer.alloc(32, 7).toString("base64");
-    await exec("docker", [
-      "run",
-      "--rm",
-      "-d",
-      "--name",
-      containerName,
-      "-p",
-      "127.0.0.1::10000",
-      "-e",
-      `AZURITE_ACCOUNTS=${accountName}:${accountKey}`,
-      "mcr.microsoft.com/azure-storage/azurite",
-      "azurite-blob",
-      "--blobHost",
-      "0.0.0.0",
-      "--skipApiVersionCheck",
-      "--silent",
-    ]);
+    const accountName =
+      process.env.AZURITE_TEST_ACCOUNT_NAME || "s3browsertest";
+    const accountKey =
+      process.env.AZURITE_TEST_ACCOUNT_KEY ||
+      Buffer.alloc(32, 7).toString("base64");
+    let endpoint = process.env.AZURITE_TEST_ENDPOINT;
+    let startedDocker = false;
+    let cleanupContainer;
     t.after(async () => {
-      await exec("docker", ["rm", "-f", containerName]);
+      try {
+        await cleanupContainer?.deleteIfExists();
+      } finally {
+        if (startedDocker) await exec("docker", ["rm", "-f", containerName]);
+      }
     });
-    const { stdout } = await exec("docker", [
-      "port",
-      containerName,
-      "10000/tcp",
-    ]);
-    const endpoint = `http://${stdout.trim()}/${accountName}`;
+    if (!endpoint) {
+      await exec("docker", [
+        "run",
+        "--rm",
+        "-d",
+        "--name",
+        containerName,
+        "-p",
+        "127.0.0.1::10000",
+        "-e",
+        `AZURITE_ACCOUNTS=${accountName}:${accountKey}`,
+        "mcr.microsoft.com/azure-storage/azurite:3.35.0",
+        "azurite-blob",
+        "--blobHost",
+        "0.0.0.0",
+        "--skipApiVersionCheck",
+        "--silent",
+      ]);
+
+      startedDocker = true;
+      const { stdout } = await exec("docker", [
+        "port",
+        containerName,
+        "10000/tcp",
+      ]);
+      endpoint = `http://${stdout.trim()}/${accountName}`;
+    }
     const service = new BlobServiceClient(
       endpoint,
       new StorageSharedKeyCredential(accountName, accountKey),
@@ -67,7 +83,9 @@ test(
     const bucket = `test-${randomUUID()}`;
     for (let attempt = 0; ; attempt++) {
       try {
-        await service.getContainerClient(bucket).create();
+        const candidate = service.getContainerClient(bucket);
+        await candidate.create();
+        cleanupContainer = candidate;
         break;
       } catch (error) {
         if (attempt >= 30) throw error;

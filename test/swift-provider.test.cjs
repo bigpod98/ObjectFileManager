@@ -114,7 +114,10 @@ test("Swift account and delimiter listings retain pagination and UTC timestamps"
 test("Swift streams conditional uploads and downloads and preserves encoded object paths", async (t) => {
   const received = [];
   const { swift } = await fixture(t, async (req, res) => {
-    assert.equal(req.url, "/v1/AUTH_test/container/folder/../%C3%A9%20%3F%23");
+    assert.equal(
+      req.url,
+      "/v1/AUTH_test/container/folder/a..b/%252e/%C3%A9%20%3F%23",
+    );
     if (req.method === "PUT") {
       assert.equal(req.headers["if-none-match"], "*");
       assert.equal(req.headers["x-object-meta-test"], "value");
@@ -132,7 +135,7 @@ test("Swift streams conditional uploads and downloads and preserves encoded obje
       res.end("abcdef");
     }
   });
-  const input = { Bucket: "container", Key: "folder/../é ?#" };
+  const input = { Bucket: "container", Key: "folder/a..b/%2e/é ?#" };
   const progress = [];
   const uploaded = await swift.upload(
     {
@@ -152,6 +155,136 @@ test("Swift streams conditional uploads and downloads and preserves encoded obje
   );
   assert.equal(downloaded.Metadata.test, "value");
   assert.equal((await body(downloaded.Body)).toString(), "abcdef");
+});
+
+test("Swift rejects exact dot segments before reads, writes, copy or discovery requests", async (t) => {
+  const { swift, requests, infoRequests } = await fixture(t, (_, res) =>
+    res.end(),
+  );
+  const unsafeKeys = [
+    ".",
+    "..",
+    "./file",
+    "../file",
+    "folder/./file",
+    "folder/../file",
+    "folder/.",
+    "folder/..",
+    "folder//../file",
+  ];
+  for (const Key of unsafeKeys) {
+    const input = { Bucket: "container", Key };
+    for (const command of [
+      new GetObjectCommand(input),
+      new HeadObjectCommand(input),
+      new PutObjectCommand({ ...input, Body: Buffer.from("data") }),
+      new DeleteObjectCommand(input),
+      new CopyObjectCommand({ ...input, CopySource: "source/safe" }),
+      new CopyObjectCommand({
+        ...input,
+        CopySource: "source/safe",
+        IfNoneMatch: "*",
+      }),
+    ])
+      await assert.rejects(swift.send(command), /dot path segments/);
+    await assert.rejects(swift.signedUrl(input, 600), /dot path segments/);
+    let read = false;
+    const source = new Readable({
+      read() {
+        read = true;
+        this.push(null);
+      },
+    });
+    await assert.rejects(
+      swift.upload({ ...input, Body: source, ContentLength: 4 }),
+      /dot path segments/,
+    );
+    assert.equal(read, false);
+    assert.equal(source.destroyed, true);
+  }
+  for (const Bucket of [".", ".."]) {
+    await assert.rejects(
+      swift.send(new ListObjectsV2Command({ Bucket })),
+      /dot path segments/,
+    );
+    await assert.rejects(
+      swift.send(new GetObjectCommand({ Bucket, Key: "safe" })),
+      /dot path segments/,
+    );
+    await assert.rejects(
+      swift.upload({ Bucket, Key: "safe", Body: "data" }),
+      /dot path segments/,
+    );
+  }
+  assert.equal(requests.length, 0);
+  assert.equal(infoRequests.length, 0, "no credentialed discovery request");
+});
+
+test("Swift validates decoded copy source dot segments before either copy strategy makes requests", async (t) => {
+  const { swift, requests, infoRequests } = await fixture(t, (_, res) =>
+    res.end(),
+  );
+  for (const CopySource of [
+    "source/.",
+    "source/..",
+    "/source/./file",
+    "source/../file",
+    "source/%2e/file",
+    "source/%2E%2e/file",
+    "source/.%2E/file",
+    "source/%2e./file",
+    "source/folder%2F..%2Ffile",
+    "../file",
+    "%2e/file",
+  ]) {
+    for (const IfNoneMatch of [undefined, "*"])
+      await assert.rejects(
+        swift.send(
+          new CopyObjectCommand({
+            Bucket: "destination",
+            Key: "safe",
+            CopySource,
+            IfNoneMatch,
+          }),
+        ),
+        /dot path segments/,
+      );
+  }
+  assert.equal(requests.length, 0);
+  assert.equal(infoRequests.length, 0);
+});
+
+test("Swift copies dotted names and literal percent sequences without altering them", async (t) => {
+  const Key = ".hidden/.../a..b/%2e/%2E%2e/100%/file.txt";
+  const encoded = Key.split("/").map(encodeURIComponent).join("/");
+  const { swift, requests } = await fixture(t, async (req, res) => {
+    if (req.method === "GET") {
+      assert.equal(req.url, `/v1/AUTH_test/source/${encoded}`);
+      res.writeHead(200, { "content-length": 4 });
+      res.end("data");
+    } else {
+      assert.equal(req.url, `/v1/AUTH_test/destination/${encoded}`);
+      if (req.headers["x-copy-from"])
+        assert.equal(req.headers["x-copy-from"], `/source/${encoded}`);
+      else assert.equal((await body(req)).toString(), "data");
+      res.writeHead(201);
+      res.end();
+    }
+  });
+  for (const IfNoneMatch of [undefined, "*"])
+    await swift.send(
+      new CopyObjectCommand({
+        Bucket: "destination",
+        Key,
+        CopySource: `source/${encoded}`,
+        IfNoneMatch,
+      }),
+    );
+  const url = new URL(
+    await swift.signedUrl({ Bucket: "destination", Key }, 600),
+  );
+  assert.equal(url.pathname, `/v1/AUTH_test/destination/${encoded}`);
+  assert.equal(requests.length, 3);
 });
 
 test("Swift guarded copy streams source and keeps destination create-only condition and metadata", async (t) => {

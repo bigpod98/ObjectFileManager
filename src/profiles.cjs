@@ -252,6 +252,17 @@ function restoreProfile(stored, safeStorage) {
     const credentials = JSON.parse(
       safeStorage.decryptString(Buffer.from(stored.credentials, "base64")),
     );
+    if (
+      !credentials ||
+      typeof credentials !== "object" ||
+      Array.isArray(credentials) ||
+      CREDENTIAL_FIELDS.some(
+        (field) =>
+          credentials[field] !== undefined &&
+          typeof credentials[field] !== "string",
+      )
+    )
+      throw new Error("Invalid stored credentials");
     return { ...metadata, ...pick(credentials, CREDENTIAL_FIELDS) };
   } catch {
     return { ...metadata, remember: true, locked: true, stored };

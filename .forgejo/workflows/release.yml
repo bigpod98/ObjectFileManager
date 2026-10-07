@@ -15,15 +15,7 @@ jobs:
     container:
       image: node:22-bookworm
     timeout-minutes: 180
-    services:
-      minio:
-        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-        cmd: ["server", "/data"]
-        env:
-          MINIO_ROOT_USER: s3browser-test
-          MINIO_ROOT_PASSWORD: s3browser-test-secret
     env:
-      S3_TEST_ENDPOINT: http://minio:9000
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_SHA: ${{ github.sha }}
     steps:
@@ -36,8 +28,15 @@ jobs:
         run: node scripts/ci/release.cjs validate
       - name: Install build and desktop test dependencies
         run: bash scripts/ci/install-deps.sh packages
+      - name: Install pinned Go toolchain for MinIO source build
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+          cache: false
+      - name: Build pinned MinIO and install Azurite test services
+        run: bash scripts/ci/install-test-services.sh
       - name: Check formatting, backend integration and Electron workflows
-        run: bash scripts/ci/check.sh
+        run: bash scripts/ci/with-test-services.sh bash scripts/ci/check.sh
       - name: Enable ARM64 package containers
         uses: docker/setup-qemu-action@v3
         with:
@@ -58,7 +57,7 @@ jobs:
         env:
           S3_TEST_EXECUTABLE: ./dist/linux-unpacked/s3-browser
           S3_TEST_NO_SANDBOX: "1"
-        run: xvfb-run -a npm run test:desktop
+        run: bash scripts/ci/with-test-services.sh xvfb-run -a npm run test:desktop
       - name: Collect exact-version assets and checksums
         run: node scripts/ci/release.cjs prepare
       - name: Publish assets to this tag's Forgejo release

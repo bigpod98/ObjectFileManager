@@ -11,16 +11,7 @@ jobs:
     runs-on: docker
     container:
       image: node:22-bookworm
-    timeout-minutes: 30
-    services:
-      minio:
-        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-        cmd: ["server", "/data"]
-        env:
-          MINIO_ROOT_USER: s3browser-test
-          MINIO_ROOT_PASSWORD: s3browser-test-secret
-    env:
-      S3_TEST_ENDPOINT: http://minio:9000
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -28,7 +19,14 @@ jobs:
           persist-credentials: false
       - name: Install desktop test dependencies
         run: bash scripts/ci/install-deps.sh
+      - name: Install pinned Go toolchain for MinIO source build
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+          cache: false
+      - name: Build pinned MinIO and install Azurite test services
+        run: bash scripts/ci/install-test-services.sh
       - name: Check formatting, backend integration and Electron workflows
-        run: bash scripts/ci/check.sh
+        run: bash scripts/ci/with-test-services.sh bash scripts/ci/check.sh
       - name: Verify x86_64 and ARM64 Electron bundles build
         run: npm run pack -- --linux --x64 --arm64 --publish never

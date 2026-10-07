@@ -8,11 +8,9 @@ const {
   AbortMultipartUploadCommand,
 } = require("@aws-sdk/client-s3");
 const { Upload } = require("@aws-sdk/lib-storage");
-const { createReadStream, createWriteStream } = require("node:fs");
-const { pipeline } = require("node:stream/promises");
 const { Transform } = require("node:stream");
 const { createHash } = require("node:crypto");
-const fs = require("node:fs/promises");
+const { validateUploadSource, openUploadSource } = require("./queue.cjs");
 const mime = require("mime-types");
 function client(profile) {
   const adapters = {
@@ -162,6 +160,7 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
         }
       : {};
   if (entry.directory) {
+    await validateUploadSource(entry);
     if (entry.sha256 && entry.sha256 !== createHash("sha256").digest("base64"))
       throw new Error(
         "Source content changed since scanning. Create a new batch.",
@@ -180,128 +179,118 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
     );
     return;
   }
-  const source = createReadStream(entry.source);
-  const hash = entry.sha256 ? createHash("sha256") : null;
-  let size = 0;
-  const limiter =
-    job.throttle || hash
-      ? new Transform({
-          transform(chunk, encoding, callback) {
-            hash?.update(chunk);
-            size += chunk.length;
-            Promise.resolve(job.throttle?.(chunk.length, signal)).then(
-              () => callback(null, chunk),
-              callback,
-            );
-          },
-          flush(callback) {
-            if (
-              hash &&
-              (size !== entry.size || hash.digest("base64") !== entry.sha256)
-            )
-              callback(
-                new Error(
-                  "Source content changed since scanning. Create a new batch.",
-                ),
+  const handle = await openUploadSource(entry);
+  try {
+    signal.throwIfAborted();
+    const source = handle.createReadStream({ autoClose: false });
+    const hash = entry.sha256 ? createHash("sha256") : null;
+    let size = 0;
+    const limiter =
+      job.throttle || hash
+        ? new Transform({
+            transform(chunk, encoding, callback) {
+              hash?.update(chunk);
+              size += chunk.length;
+              Promise.resolve(job.throttle?.(chunk.length, signal)).then(
+                () => callback(null, chunk),
+                callback,
               );
-            else callback();
+            },
+            flush(callback) {
+              if (
+                hash &&
+                (size !== entry.size || hash.digest("base64") !== entry.sha256)
+              )
+                callback(
+                  new Error(
+                    "Source content changed since scanning. Create a new batch.",
+                  ),
+                );
+              else callback();
+            },
+          })
+        : null;
+    const body = limiter ? source.pipe(limiter) : source;
+    const onSourceError = (error) => body.destroy(error);
+    if (limiter) source.on("error", onSourceError);
+    // Native providers own their block/resumable transport while sharing queue
+    // throttling, source validation, recovery metadata and cancellation.
+    if (typeof s3.upload === "function") {
+      const abort = () =>
+        body.destroy(
+          Object.assign(new Error("Upload paused"), { name: "AbortError" }),
+        );
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        signal.throwIfAborted();
+        await s3.upload(
+          {
+            Bucket: job.bucket,
+            Key: entry.key,
+            Body: body,
+            ContentLength: entry.size,
+            ContentType: mime.lookup(entry.key) || "application/octet-stream",
+            ...condition,
+            ...metadata,
           },
-        })
-      : null;
-  const body = limiter ? source.pipe(limiter) : source;
-  const onSourceError = (error) => body.destroy(error);
-  if (limiter) source.on("error", onSourceError);
-  // Native providers own their block/resumable transport while sharing queue
-  // throttling, source validation, recovery metadata and cancellation.
-  if (typeof s3.upload === "function") {
+          { abortSignal: signal, onProgress: onProgress || (() => {}) },
+        );
+      } catch (error) {
+        if (skipExisting && error.$metadata?.httpStatusCode === 412)
+          return "skipped";
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", abort);
+        source.destroy();
+        body.destroy();
+      }
+      return;
+    }
+    // Scope cancellation to this file, while allowing multipart cleanup to finish.
+    // Upload.abort() alone races its worker and can leave HTTP requests in flight.
+    const scopedClient = {
+      config: s3.config,
+      send: (command) =>
+        s3.send(
+          command,
+          command instanceof AbortMultipartUploadCommand
+            ? {}
+            : { abortSignal: signal },
+        ),
+    };
+    const upload = new Upload({
+      client: scopedClient,
+      params: {
+        Bucket: job.bucket,
+        Key: entry.key,
+        Body: body,
+        ContentLength: entry.size,
+        ContentType: mime.lookup(entry.key) || "application/octet-stream",
+        ...condition,
+        ...metadata,
+      },
+      queueSize: 1,
+      partSize: Math.max(8 * 1024 * 1024, Math.ceil(entry.size / 10000)),
+      leavePartsOnError: false,
+    });
     const abort = () =>
       body.destroy(
         Object.assign(new Error("Upload paused"), { name: "AbortError" }),
       );
     signal.addEventListener("abort", abort, { once: true });
+    upload.on("httpUploadProgress", (p) => onProgress(p.loaded || 0));
     try {
-      signal.throwIfAborted();
-      await s3.upload(
-        {
-          Bucket: job.bucket,
-          Key: entry.key,
-          Body: body,
-          ContentLength: entry.size,
-          ContentType: mime.lookup(entry.key) || "application/octet-stream",
-          ...condition,
-          ...metadata,
-        },
-        { abortSignal: signal, onProgress: onProgress || (() => {}) },
-      );
-    } catch (error) {
-      if (skipExisting && error.$metadata?.httpStatusCode === 412)
-        return "skipped";
-      throw error;
+      await upload.done();
+    } catch (e) {
+      if (skipExisting && e.$metadata?.httpStatusCode === 412) return "skipped";
+      throw e;
     } finally {
       signal.removeEventListener("abort", abort);
       source.destroy();
       body.destroy();
     }
-    return;
-  }
-  // Scope cancellation to this file, while allowing multipart cleanup to finish.
-  // Upload.abort() alone races its worker and can leave HTTP requests in flight.
-  const scopedClient = {
-    config: s3.config,
-    send: (command) =>
-      s3.send(
-        command,
-        command instanceof AbortMultipartUploadCommand
-          ? {}
-          : { abortSignal: signal },
-      ),
-  };
-  const upload = new Upload({
-    client: scopedClient,
-    params: {
-      Bucket: job.bucket,
-      Key: entry.key,
-      Body: body,
-      ContentLength: entry.size,
-      ContentType: mime.lookup(entry.key) || "application/octet-stream",
-      ...condition,
-      ...metadata,
-    },
-    queueSize: 1,
-    partSize: Math.max(8 * 1024 * 1024, Math.ceil(entry.size / 10000)),
-    leavePartsOnError: false,
-  });
-  const abort = () =>
-    body.destroy(
-      Object.assign(new Error("Upload paused"), { name: "AbortError" }),
-    );
-  signal.addEventListener("abort", abort, { once: true });
-  upload.on("httpUploadProgress", (p) => onProgress(p.loaded || 0));
-  try {
-    await upload.done();
-  } catch (e) {
-    if (skipExisting && e.$metadata?.httpStatusCode === 412) return "skipped";
-    throw e;
   } finally {
-    signal.removeEventListener("abort", abort);
-    source.destroy();
-    body.destroy();
+    await handle.close();
   }
 }
-async function download(s3, bucket, key, destination) {
-  const temporary = `${destination}.s3browser-${require("node:crypto").randomUUID()}.part`;
-  try {
-    const result = await s3.send(
-      new GetObjectCommand({ Bucket: bucket, Key: key }),
-    );
-    await pipeline(
-      result.Body,
-      createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
-    );
-    await fs.rename(temporary, destination);
-  } catch (e) {
-    await fs.rm(temporary, { force: true });
-    throw e;
-  }
-}
-module.exports = { client, browse, transfer, download, ListBucketsCommand };
+module.exports = { client, browse, transfer, ListBucketsCommand };

@@ -4,11 +4,11 @@ A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3
 
 ![S3 Browser](assets/welcome.png)
 
-## Run
+## Install
 
-The features below describe the current source. Forgejo release tags build and publish **DEB, RPM, Arch and a portable archive for Linux x86_64 and ARM64** after validation. See [CI and release setup](packaging/README.md#forgejo-ci-and-releases) for runner requirements, version tags and publication credentials. Local files in `dist/` are build outputs; use the tagged release assets when installing a published version.
+[Releases](https://git.tuxbase.com/bigpod/S3Browser/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#forgejo-ci-and-releases) for how releases are built and validated.
 
-Native Linux packages are built into `dist/native/`:
+Building from source places native Linux packages in `dist/native/`:
 
 | Distribution    | Package                                      | Install                                                                   |
 | --------------- | -------------------------------------------- | ------------------------------------------------------------------------- |
@@ -20,7 +20,7 @@ After installation, open **S3 Browser** from your application menu or run `s3-br
 
 The table shows x86_64 filenames; ARM64 builds use `arm64` for DEB and `aarch64` for RPM/Arch.
 
-A portable alternative is `dist/s3-browser-0.1.1-linux-x64.tar.gz`: extract it and open `s3-browser` inside the extracted folder (`linux-arm64.tar.gz` for ARM64). Keep its accompanying files together. In this workspace, `dist/linux-unpacked/s3-browser` can also be launched directly.
+A portable alternative is `s3-browser-0.1.1-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `s3-browser` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/s3-browser` can also be launched directly.
 
 To run from source, install Node.js 22.13 or later and a recent npm:
 
@@ -125,7 +125,11 @@ Pasted credentials, including Keystone passwords, Swift tokens/TempURL keys, Azu
 
 Keystone uses the [Identity v3 password flow](https://docs.openstack.org/api-ref/identity/v3/) and the public object-store endpoint for the selected region. A refresh that changes the account endpoint or project is rejected. Read requests can retry once after token rejection; streamed writes use the durable queue's retry handling instead of replaying a consumed stream. Azure authentication follows the [Blob SDK connection options](https://learn.microsoft.com/en-us/javascript/api/overview/azure/storage-blob-readme). Google default authentication must be selected explicitly; an empty JSON field never silently falls back to [Application Default Credentials](https://docs.cloud.google.com/storage/docs/authentication).
 
-Credentials need bucket listing permission for browsing, object write permission for uploads, object read permission for downloads and skip-existing checks, and multipart upload/abort permission for large files. Copy and metadata workflows may also need tagging permissions; deletes, version access, and multipart listing need their respective permissions. Listing all buckets is optional. A `403` on an existence check is treated as a failure rather than assuming the object is missing. Skip uploads send `If-None-Match: *`; ordinary upload replace mode intentionally permits overwrites. Reviewed operations and sync retain their conditional guards and do not retry without them when a provider rejects them. HTTPS uses normal certificate validation. Private CAs can be supplied through `NODE_EXTRA_CA_CERTS` when launching from a configured environment.
+Credentials need bucket listing permission for browsing, object write permission for uploads, object read permission for downloads and skip-existing checks, and multipart upload/abort permission for large files. Copy and metadata workflows may also need tagging permissions; deletes, version access, and multipart listing need their respective permissions. Listing all buckets is optional. A `403` on an existence check is treated as a failure rather than assuming the object is missing. Skip uploads send `If-None-Match: *`; ordinary upload replace mode intentionally permits overwrites. Reviewed operations and sync retain their conditional guards and do not retry without them when a provider rejects them.
+
+These guards protect only when the provider enforces them. The app sends ETag, create-only, and generation preconditions, but cannot detect a server that accepts the request and silently ignores them; such a server then overwrites or deletes unconditionally. Amazon S3, Azure Blob Storage, and Google Cloud Storage document these conditions. Before relying on reviewed sync replacement or deletion, move, delete, or metadata replacement on another S3-compatible server, confirm that its version honors `If-Match`, `If-None-Match`, and copy-source conditions.
+
+HTTPS uses normal certificate validation. Private CAs can be supplied through `NODE_EXTRA_CA_CERTS` when launching from a configured environment.
 
 ## Queue behavior and limits
 
@@ -141,40 +145,45 @@ Credentials need bucket listing permission for browsing, object write permission
 
 ## Development and verification
 
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
 ```sh
-npm test              # Unit tests; backend integrations skip without an endpoint
+npm test              # Unit tests; service-backed integrations skip without endpoints
 npm run test:desktop  # Electron smoke test; requires a display
 npm run test:desktop:providers # Provider form smoke; headless Chromium, no cloud account
-AZURITE_INTEGRATION=1 node --test test/azure-integration.test.cjs # Disposable Docker emulator
 npm run test:desktop:expansion # Expanded workflows; requires a display and S3_TEST_ENDPOINT
 npm run dist          # Native DEB, RPM and ALPM packages (requires Docker)
 npm run dist:portable # Portable Linux tar.gz archive
 npm run pack          # Unpacked desktop application
 ```
 
-Backend integration tests are enabled by `S3_TEST_ENDPOINT` and use dedicated temporary buckets. A local test service can be started with:
+Backend integration tests use disposable local MinIO and Azurite services. Install them once; this requires Go and npm, builds MinIO from a pinned upstream commit with Go 1.25.5, and installs Azurite 3.35.0 under `~/.cache/s3browser-test-services` (override with `S3BROWSER_TEST_SERVICE_DIR`), outside the project lockfile:
 
 ```sh
-docker run --rm --name s3browser-test-storage \
-  -p 127.0.0.1:19000:9000 \
-  -e MINIO_ROOT_USER=s3browser-test \
-  -e MINIO_ROOT_PASSWORD=s3browser-test-secret \
-  quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+bash scripts/ci/install-test-services.sh
 ```
 
-In another terminal:
+The helper then starts fresh loopback services with temporary storage, exports the `S3_TEST_*` and `AZURITE_*` test settings, runs the given command, and stops and removes the services afterwards. It never uses an existing endpoint:
 
 ```sh
-S3_TEST_ENDPOINT=http://127.0.0.1:19000 npm test
-S3_TEST_ENDPOINT=http://127.0.0.1:19000 npm run test:desktop
-S3_TEST_ENDPOINT=http://127.0.0.1:19000 npm run test:desktop:expansion
-S3_TEST_ENDPOINT=http://127.0.0.1:19000 npm run test:scale
+bash scripts/ci/with-test-services.sh npm test
+bash scripts/ci/with-test-services.sh npm run test:desktop
+bash scripts/ci/with-test-services.sh npm run test:desktop:expansion
+bash scripts/ci/with-test-services.sh npm run test:scale
 ```
 
-Override `S3_TEST_ACCESS_KEY` and `S3_TEST_SECRET_KEY` for backend tests if needed. The desktop smoke test uses the local credentials above. The opt-in scale test creates 49,500 small files and 500 directories, uploads and counts all 50,000 objects, then removes its temporary bucket and local files. Use a disposable local service; these tests issue writes, reads, and deletes in their own newly created bucket.
+The full CI gate is `bash scripts/ci/with-test-services.sh bash scripts/ci/check.sh`. It reinstalls dependencies with `npm ci`, installs Playwright's Chromium and its system packages, and disables Chromium's sandbox for the Electron suites, so run it as root only in a disposable Linux container with the packages from `scripts/ci/install-deps.sh`, as CI does.
 
-The original and expansion backend suites have run against the disposable MinIO service. They exercise Unicode paths, empty folders, multipart uploads, queued downloads, skip/replace behavior, source-change rejection, copy/move/delete, metadata replacement, signed-link downloads, recursive search across 2,505 keys, reviewed sync and conditional cleanup, version restore, and multipart abort. Unsupported bucket versioning may be skipped on other backends. Large multipart-copy branches are covered with simulated SDK responses rather than live multi-gigabyte objects.
+Desktop tests save screenshots to the ignored `test-results/desktop` directory. Set `S3_TEST_REFRESH_ASSETS=1` to deliberately regenerate the documentation images in `assets/`. The opt-in scale test creates 49,500 small files and 500 directories, uploads and counts all 50,000 objects, then removes its temporary bucket and local files. Tests issue writes, reads, and deletes only in buckets and containers they create.
 
-The desktop smoke test uses the real Electron window and actual IPC. Existing Linux 0.1.1 artifacts were built previously; they do not establish packaging validation for these source changes. Windows/macOS build targets are configured but have not been built or tested. Live R2 and Ceph accounts have not been tested.
+The backend and expansion suites exercise Unicode paths, empty folders, multipart uploads, queued downloads, skip/replace behavior, source-change rejection, copy/move/delete, metadata replacement, signed-link downloads, recursive search across 2,505 keys, reviewed sync and conditional cleanup, version restore, and multipart abort against MinIO. Unsupported bucket versioning may be skipped on other backends. Large multipart-copy branches are covered with simulated SDK responses rather than live multi-gigabyte objects. The desktop smoke test uses the real Electron window and actual IPC.
 
-Native provider tests cover Swift against a local HTTP fixture, Azure SDK calls and a disposable Azurite emulator, and GCS authenticated API requests plus the installed SDK’s resumable upload preconditions. The headless provider form test uses the real renderer with an IPC fixture; install Chromium with `npx playwright install chromium` if needed. Real Azure, GCS, and Swift cloud accounts have not been tested.
+Native provider tests cover Swift against a local HTTP fixture, Azure SDK calls and the Azurite emulator, and GCS authenticated API requests plus the installed SDK’s resumable upload preconditions. The headless provider form test uses the real renderer with an IPC fixture; install Chromium with `npx playwright install chromium` if needed.
+
+Not covered by automated tests: live Amazon S3, R2, Ceph, Azure, Google Cloud Storage, and Swift accounts, and Windows/macOS builds, whose targets are configured but not built.
+
+## License
+
+S3 Browser is released under the [MIT License](LICENSE), copyright 2026 Primož Ajdišek (bigpod).
+
+Builds also contain Electron, Chromium, and npm production dependencies under their own licenses. Portable archives include `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html` beside the executable; native packages also install them in `/usr/share/licenses/s3-browser/`. `THIRD_PARTY_NOTICES.txt` is generated during each build from the locked, installed production dependencies; see [license notices](packaging/README.md#license-notices).

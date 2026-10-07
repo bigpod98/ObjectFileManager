@@ -1,0 +1,25 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: S3 Browser
+Upstream-Contact: Primož Ajdišek (bigpod) <bigpod@bigpod.si>
+Source: https://git.tuxbase.com/bigpod/S3Browser
+
+Files: *
+Copyright: 2026 Primož Ajdišek (bigpod)
+License: MIT
+
+Files: opt/s3-browser/*
+Copyright: Electron, Chromium and bundled dependency contributors
+License: bundled-notices
+Comment: S3 Browser's own code in resources/app.asar is MIT-licensed. Bundled
+ production dependencies and the Electron runtime retain their own licenses.
+
+License: MIT
+@MIT_TEXT@
+
+License: bundled-notices
+ The licenses and notices of the bundled components are installed in
+ /usr/share/licenses/s3-browser/:
+ .
+  THIRD_PARTY_NOTICES.txt  production npm dependencies in resources/app.asar
+  LICENSE.electron.txt     Electron
+  LICENSES.chromium.html   Chromium, Node.js and other runtime components
