@@ -1071,3 +1071,15 @@ details button {
 .selected-row {
   background: #253222;
 }
+
+[data-provider-fields] label,
+[data-auth-fields] label {
+  margin-top: 14px;
+}
+[name="serviceAccountJson"] {
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  min-height: 120px;
+  resize: vertical;
+}

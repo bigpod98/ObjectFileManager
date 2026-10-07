@@ -40,6 +40,39 @@ const samples = [
     accountKey: "azure-key-private",
   },
   { provider: "Google Cloud Storage", serviceAccountJson },
+  {
+    provider: "OpenStack Swift",
+    swiftAuth: "keystone",
+    authUrl: "https://identity.example.com/v3",
+    username: "private-user",
+    password: " private-password ",
+    projectName: "project",
+    domainName: "Default",
+    region: "RegionOne",
+  },
+  {
+    provider: "Azure Blob Storage",
+    azureAuth: "sas",
+    accountName: "accountprivate",
+    sasToken: "?sv=2025-01-05&sig=private-signature",
+  },
+  {
+    provider: "Azure Blob Storage",
+    azureAuth: "connectionString",
+    connectionString:
+      "DefaultEndpointsProtocol=https;AccountName=accountprivate;AccountKey=cHJpdmF0ZS1rZXk=;EndpointSuffix=core.windows.net",
+  },
+  {
+    provider: "Google Cloud Storage",
+    googleAuth: "file",
+    keyFilename: "/private/service-account.json",
+    projectId: "project",
+  },
+  {
+    provider: "Google Cloud Storage",
+    googleAuth: "default",
+    projectId: "project",
+  },
 ];
 const key = randomBytes(32);
 const safeStorage = {
@@ -341,4 +374,64 @@ test("Swift token refresh rejects unavailable connections and invalid tokens", (
   assert.throws(() => refreshSwiftToken(samples[0], "token"), /only available/);
   for (const token of ["", "   ", null, undefined, 7])
     assert.throws(() => refreshSwiftToken(swift, token), /token is required/);
+});
+
+test("authentication modes discard inactive secrets and enforce explicit credential selection", () => {
+  const swift = normalizeProfile({
+    ...samples[4],
+    name: "Keystone",
+    swiftToken: "stale",
+  });
+  assert.equal(swift.swiftToken, undefined);
+  assert.equal(swift.password, " private-password ");
+  assert.throws(() => refreshSwiftToken(swift, "new-token"), /automatically/);
+  const sas = normalizeProfile({
+    ...samples[5],
+    name: "SAS",
+    accountKey: "stale",
+  });
+  assert.equal(sas.accountKey, undefined);
+  assert.equal(publicProfile(sas).capabilities.signedUrl, false);
+  assert.equal(
+    publicProfile(normalizeProfile({ ...samples[6], name: "key" })).capabilities
+      .signedUrl,
+    true,
+  );
+  const sasConnection = normalizeProfile({
+    name: "SAS connection",
+    provider: "Azure Blob Storage",
+    connectionString:
+      "BlobEndpoint=https://example.blob.core.windows.net;SharedAccessSignature=sv=2025-01-05&sig=secret",
+  });
+  assert.equal(publicProfile(sasConnection).capabilities.signedUrl, false);
+  const adc = normalizeProfile({
+    ...samples[8],
+    name: "ADC",
+    serviceAccountJson: "stale",
+    keyFilename: "/stale",
+  });
+  assert.equal(adc.serviceAccountJson, undefined);
+  assert.equal(adc.keyFilename, undefined);
+  assert.throws(
+    () =>
+      normalizeProfile({
+        ...samples[7],
+        name: "file",
+        keyFilename: "relative.json",
+      }),
+    /absolute path/,
+  );
+  assert.throws(
+    () => normalizeProfile({ ...samples[8], name: "ADC", projectId: "" }),
+    /project ID/,
+  );
+  assert.throws(
+    () =>
+      normalizeProfile({
+        ...samples[6],
+        name: "bad",
+        connectionString: "invalid-secret",
+      }),
+    /valid Azure/,
+  );
 });

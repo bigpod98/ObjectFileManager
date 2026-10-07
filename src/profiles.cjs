@@ -20,6 +20,11 @@ const CREDENTIAL_FIELDS = [
   "accountName",
   "accountKey",
   "serviceAccountJson",
+  "connectionString",
+  "sasToken",
+  "username",
+  "password",
+  "keyFilename",
 ];
 const METADATA_FIELDS = [
   "id",
@@ -31,6 +36,13 @@ const METADATA_FIELDS = [
   "pathStyle",
   "projectId",
   "remember",
+  "swiftAuth",
+  "authUrl",
+  "projectName",
+  "domainName",
+  "domainId",
+  "googleAuth",
+  "azureAuth",
 ];
 const pick = (value, fields) =>
   Object.fromEntries(
@@ -74,29 +86,97 @@ function normalizeProfile(input) {
       );
   }
   if (p.provider === "OpenStack Swift") {
+    p.swiftAuth = input.swiftAuth || (input.authUrl ? "keystone" : "token");
+    if (!["token", "keystone"].includes(p.swiftAuth))
+      throw new Error("Choose a supported Swift authentication method.");
     p.swiftToken = string(input.swiftToken).trim();
-    p.swiftTempUrlKey = string(input.swiftTempUrlKey);
-    if (!p.endpoint || !p.swiftToken)
+    p.swiftTempUrlKey = string(input.swiftTempUrlKey || input.tempUrlKey);
+    if (p.swiftAuth === "keystone") {
+      p.endpoint = "";
+      p.authUrl = string(input.authUrl).trim();
+      require("./providers/keystone.cjs").tokenUrl(p.authUrl);
+      p.username = string(input.username).trim();
+      p.password = string(input.password);
+      p.projectName = string(input.projectName).trim();
+      p.projectId = string(input.projectId).trim();
+      p.domainName = string(input.domainName).trim() || "Default";
+      p.domainId = string(input.domainId).trim();
+      p.region = string(input.region).trim();
+      delete p.swiftToken;
+      if (!p.username || !p.password || (!p.projectName && !p.projectId))
+        throw new Error(
+          "Keystone requires a username, password, and project name or ID.",
+        );
+    } else if (!p.endpoint || !p.swiftToken)
       throw new Error(
         "The Swift account storage URL and authentication token are required.",
       );
   } else if (p.provider === "Azure Blob Storage") {
+    p.azureAuth =
+      input.azureAuth ||
+      (input.connectionString
+        ? "connectionString"
+        : input.sasToken
+          ? "sas"
+          : "key");
+    if (!["key", "sas", "connectionString"].includes(p.azureAuth))
+      throw new Error("Choose a supported Azure authentication method.");
     p.accountName = string(input.accountName).trim();
-    p.accountKey = string(input.accountKey).trim();
-    if (!p.accountName || !p.accountKey)
-      throw new Error(
-        "The Azure storage account name and account key are required.",
-      );
-    if (!/^[a-z0-9]{3,24}$/.test(p.accountName))
-      throw new Error(
-        "Use an Azure storage account name with 3–24 lowercase letters or digits.",
-      );
+    if (p.azureAuth === "connectionString") {
+      p.connectionString = string(input.connectionString).trim();
+      if (!p.connectionString)
+        throw new Error("An Azure connection string is required.");
+      // Validate locally; constructing the SDK client makes no network request.
+      try {
+        require("@azure/storage-blob").BlobServiceClient.fromConnectionString(
+          p.connectionString,
+        );
+      } catch {
+        throw new Error("Enter a valid Azure Blob connection string.");
+      }
+      p.endpoint = "";
+      delete p.accountName;
+    } else {
+      if (p.azureAuth === "sas") {
+        p.sasToken = string(input.sasToken).trim().replace(/^\?/, "");
+        if (!new URLSearchParams(p.sasToken).get("sig"))
+          throw new Error(
+            "An Azure SAS token containing a signature is required.",
+          );
+      } else p.accountKey = string(input.accountKey).trim();
+      if (!p.accountName || (p.azureAuth === "key" && !p.accountKey))
+        throw new Error(
+          "The Azure storage account name and account key are required.",
+        );
+      if (!/^[a-z0-9]{3,24}$/.test(p.accountName))
+        throw new Error(
+          "Use an Azure storage account name with 3–24 lowercase letters or digits.",
+        );
+    }
   } else if (p.provider === "Google Cloud Storage") {
     if (p.endpoint)
       throw new Error(
         "Google Cloud Storage uses its standard Google API endpoint.",
       );
-    p.serviceAccountJson = string(input.serviceAccountJson).trim();
+    p.googleAuth = input.googleAuth || (input.keyFilename ? "file" : "json");
+    if (!["json", "file", "default"].includes(p.googleAuth))
+      throw new Error("Choose a supported Google authentication method.");
+    if (p.googleAuth !== "json") {
+      p.projectId = string(input.projectId).trim();
+      if (!p.projectId)
+        throw new Error("A Google Cloud project ID is required.");
+      if (p.googleAuth === "file") {
+        p.keyFilename = string(input.keyFilename).trim();
+        if (!require("node:path").isAbsolute(p.keyFilename))
+          throw new Error(
+            "Use an absolute path to the Google service account key file.",
+          );
+      }
+      return p;
+    }
+    p.serviceAccountJson = string(
+      input.serviceAccountJson || input.keyFile,
+    ).trim();
     let credentials;
     try {
       credentials = JSON.parse(p.serviceAccountJson);
@@ -149,6 +229,8 @@ function refreshSwiftToken(profile, token) {
     throw new Error(
       "Token refresh is only available for OpenStack Swift connections.",
     );
+  if (profile.swiftAuth === "keystone" || profile.authUrl)
+    throw new Error("Keystone connections refresh their tokens automatically.");
   const swiftToken = string(token).trim();
   if (!swiftToken) throw new Error("A Swift authentication token is required.");
   return { ...profile, swiftToken };

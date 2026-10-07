@@ -127,15 +127,24 @@ function client(profile, injected = {}) {
   const sdk = injected.sdk || require("@azure/storage-blob");
   const credential =
     injected.credential ||
-    new sdk.StorageSharedKeyCredential(profile.accountName, profile.accountKey);
+    (profile.accountKey &&
+      new sdk.StorageSharedKeyCredential(
+        profile.accountName,
+        profile.accountKey,
+      ));
   const service =
     injected.service ||
-    new sdk.BlobServiceClient(
-      profile.endpoint ||
-        `https://${profile.accountName}.blob.core.windows.net`,
-      credential,
-      { retryOptions: { maxTries: 5 } },
-    );
+    (profile.connectionString
+      ? sdk.BlobServiceClient.fromConnectionString(profile.connectionString, {
+          retryOptions: { maxTries: 5 },
+        })
+      : new sdk.BlobServiceClient(
+          (profile.endpoint ||
+            `https://${profile.accountName}.blob.core.windows.net`) +
+            (profile.sasToken ? `?${profile.sasToken.replace(/^\?/, "")}` : ""),
+          credential || undefined,
+          { retryOptions: { maxTries: 5 } },
+        ));
   const container = (input) =>
     service.getContainerClient(input.Bucket || profile.bucket);
   const blob = (input) => {
@@ -512,12 +521,19 @@ function client(profile, injected = {}) {
       copy: true,
       metadata: true,
       versions: true,
-      signedUrl: true,
+      signedUrl: require("../provider-capabilities.cjs").capabilities({
+        ...profile,
+        provider: "Azure Blob Storage",
+      }).signedUrl,
       multipart: false,
     },
     send,
     upload,
     signedUrl(input, expiresIn) {
+      if (!this.capabilities.signedUrl)
+        throw unsupported(
+          "generating download links requires account key authentication.",
+        );
       return blob(input).generateSasUrl({
         permissions: sdk.BlobSASPermissions.parse("r"),
         startsOn: new Date(Date.now() - 5 * 60 * 1000),

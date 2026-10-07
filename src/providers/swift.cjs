@@ -1,5 +1,4 @@
-// Native Swift account API. Swift tokens are supplied by the user and must be
-// replaced when they expire; this adapter does not store Keystone credentials.
+// Native Swift account API, with optional Keystone authentication.
 const http = require("node:http");
 const https = require("node:https");
 const { Readable } = require("node:stream");
@@ -72,6 +71,8 @@ function output(response) {
   return result;
 }
 function client(profile) {
+  if (profile.swiftAuth === "keystone" || profile.authUrl)
+    return require("./keystone.cjs").client(profile, client);
   if (!profile.endpoint || !profile.swiftToken)
     throw new Error(
       "Swift requires an account storage URL and authentication token.",

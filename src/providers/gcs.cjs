@@ -91,27 +91,46 @@ function head(metadata) {
 }
 
 function client(profile) {
+  const mode = profile.googleAuth || (profile.keyFilename ? "file" : "json");
+  if (!["json", "file", "default"].includes(mode))
+    throw new Error("Choose a supported Google authentication method.");
   let credentials;
-  try {
-    credentials = JSON.parse(profile.serviceAccountJson);
-  } catch {
-    throw new Error(
-      "Google Cloud Storage requires valid service account JSON.",
-    );
+  if (mode === "json") {
+    try {
+      credentials = JSON.parse(profile.serviceAccountJson || profile.keyFile);
+    } catch {
+      throw new Error(
+        "Google Cloud Storage requires valid service account JSON.",
+      );
+    }
+    if (
+      credentials?.type !== "service_account" ||
+      !credentials.client_email ||
+      !credentials.private_key
+    )
+      throw new Error(
+        "Google Cloud Storage requires a service account email and private key.",
+      );
   }
   if (
-    credentials?.type !== "service_account" ||
-    !credentials.client_email ||
-    !credentials.private_key
+    mode === "file" &&
+    !require("node:path").isAbsolute(profile.keyFilename || "")
   )
     throw new Error(
-      "Google Cloud Storage requires a service account email and private key.",
+      "Use an absolute path to the Google service account key file.",
     );
-  const projectId = profile.projectId || credentials.project_id;
+  const projectId = profile.projectId || credentials?.project_id;
   if (!projectId)
     throw new Error("Google Cloud Storage requires a project ID.");
   const { Storage, CRC32C } = require("@google-cloud/storage");
-  const storage = new Storage({ projectId, credentials });
+  const storage = new Storage({
+    projectId,
+    ...(credentials
+      ? { credentials }
+      : mode === "file"
+        ? { keyFilename: profile.keyFilename }
+        : {}),
+  });
   const lifetime = new AbortController();
   const signalFor = (signal) =>
     signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;

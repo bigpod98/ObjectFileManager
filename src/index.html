@@ -295,12 +295,48 @@
         </div>
         <div data-provider-fields="swift" hidden>
           <label
-            >Authentication token<input
-              name="swiftToken"
-              type="password"
-              autocomplete="off"
-              data-required
-          /></label>
+            >Sign in with<select name="swiftAuth" id="swift-auth">
+              <option value="token">Existing authentication token</option>
+              <option value="keystone">Keystone username and password</option>
+            </select></label
+          >
+          <div data-auth-fields="swift:keystone" hidden>
+            <label
+              >Keystone URL<input
+                name="authUrl"
+                type="url"
+                data-required
+                placeholder="https://keystone.example.com/v3"
+            /></label>
+            <label
+              >Username<input name="username" autocomplete="off" data-required
+            /></label>
+            <label
+              >Password<input
+                name="password"
+                type="password"
+                autocomplete="off"
+                data-required
+            /></label>
+            <label
+              >Project name<input name="projectName" data-required
+            /></label>
+            <label
+              >Domain name<input name="domainName" value="Default"
+            /></label>
+            <label
+              >Region (optional)<input name="region" placeholder="RegionOne"
+            /></label>
+          </div>
+          <div data-auth-fields="swift:token">
+            <label
+              >Authentication token<input
+                name="swiftToken"
+                type="password"
+                autocomplete="off"
+                data-required
+            /></label>
+          </div>
           <label
             >TempURL key
             <span class="muted">(optional, for download links)</span
@@ -309,31 +345,80 @@
         </div>
         <div data-provider-fields="azure" hidden>
           <label
-            >Storage account name<input
-              name="accountName"
-              autocomplete="off"
-              spellcheck="false"
-              data-required
-          /></label>
-          <label
-            >Account key<input
-              name="accountKey"
-              type="password"
-              autocomplete="off"
-              data-required
-          /></label>
+            >Sign in with<select name="azureAuth" id="azure-auth">
+              <option value="key">Account key</option>
+              <option value="sas">SAS token</option>
+              <option value="connectionString">Connection string</option>
+            </select></label
+          >
+          <div data-auth-fields="azure:key,sas">
+            <label
+              >Storage account name<input
+                name="accountName"
+                autocomplete="off"
+                spellcheck="false"
+                data-required
+            /></label>
+          </div>
+          <div data-auth-fields="azure:key">
+            <label
+              >Account key<input
+                name="accountKey"
+                type="password"
+                autocomplete="off"
+                data-required
+            /></label>
+          </div>
+          <div data-auth-fields="azure:sas" hidden>
+            <label
+              >SAS token<input
+                name="sasToken"
+                type="password"
+                autocomplete="off"
+                data-required
+            /></label>
+          </div>
+          <div data-auth-fields="azure:connectionString" hidden>
+            <label
+              >Connection string<input
+                name="connectionString"
+                type="password"
+                autocomplete="off"
+                data-required
+            /></label>
+          </div>
         </div>
         <div data-provider-fields="gcs" hidden>
           <label
-            >Service account JSON key<textarea
-              name="serviceAccountJson"
-              rows="5"
-              autocomplete="off"
-              spellcheck="false"
-              data-required
-              placeholder="Paste the service account JSON key"
-            ></textarea>
-          </label>
+            >Sign in with<select name="googleAuth" id="gcs-auth">
+              <option value="json">Service account JSON</option>
+              <option value="file">Service account key file</option>
+              <option value="default">Application Default Credentials</option>
+            </select></label
+          >
+          <div data-auth-fields="gcs:json">
+            <label
+              >Service account JSON key<textarea
+                name="serviceAccountJson"
+                rows="5"
+                autocomplete="off"
+                spellcheck="false"
+                data-required
+                placeholder="Paste the service account JSON key"
+              ></textarea>
+            </label>
+          </div>
+          <div data-auth-fields="gcs:file" hidden>
+            <label
+              >Service account key file<input
+                name="keyFilename"
+                placeholder="/path/to/service-account.json"
+                data-required
+            /></label>
+          </div>
+          <p data-auth-fields="gcs:default" class="form-note" hidden>
+            Uses the Google credentials configured on this device.
+          </p>
           <label
             >Project ID
             <span class="muted">(optional, defaults to the key’s project)</span

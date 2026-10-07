@@ -26,6 +26,9 @@ const path = require("node:path");
             id: String(profiles.length + 1),
             name: input.name,
             provider: input.provider,
+            swiftAuth: input.swiftAuth,
+            googleAuth: input.googleAuth,
+            azureAuth: input.azureAuth,
             endpoint: input.endpoint,
             bucket: input.bucket,
             remember: input.remember,
@@ -185,6 +188,88 @@ const path = require("node:path");
     await page.locator("#connection-form button[type=submit]").click();
     await expect(page.locator("#multipart-open")).toBeVisible();
     await expect(page.locator("#refresh-swift")).not.toBeVisible();
+    await page.locator("#add-connection").click();
+    await page.locator("#provider").selectOption("OpenStack Swift");
+    await page.locator("#swift-auth").selectOption("keystone");
+    await expect(page.locator("#endpoint")).toBeDisabled();
+    await expect(page.locator("[name=swiftToken]")).toBeDisabled();
+    await page.locator("[name=name]").fill("Keystone test");
+    await page
+      .locator("[name=authUrl]")
+      .fill("https://identity.example.com/v3");
+    await page.locator("[name=username]").fill("test-user");
+    await page.locator("[name=password]").fill(" password ");
+    await page.locator("[name=projectName]").fill("project");
+    await page
+      .locator('[data-auth-fields="swift:keystone"] [name=region]')
+      .fill("RegionOne");
+    await page.locator("#connection-form button[type=submit]").click();
+    await expect(page.locator("#connection-dialog")).not.toBeVisible();
+    await expect(page.locator("#refresh-swift")).not.toBeVisible();
+    await expect(page.locator("#endpoint-label")).toContainText("Keystone");
+    submitted = await page.evaluate(() => window.submittedConnections.at(-1));
+    expect(submitted.swiftAuth).toBe("keystone");
+    expect(submitted.password).toBe(" password ");
+    expect(submitted.region).toBe("RegionOne");
+    expect(submitted.swiftToken).toBeUndefined();
+    expect(submitted.endpoint).toBeUndefined();
+    await page.locator("#direct-bucket").fill("container");
+    await page.locator("#open-bucket").click();
+    await page.locator("#sync-open").click();
+    await expect(page.locator("#workflow-dialog h2")).toHaveText(
+      "Sync a local folder to OpenStack Swift",
+    );
+    await page.locator('[data-close="workflow-dialog"]').click();
+
+    for (const mode of ["sas", "connectionString"]) {
+      await page.locator("#add-connection").click();
+      await page.locator("#provider").selectOption("Azure Blob Storage");
+      await page.locator("#azure-auth").selectOption(mode);
+      await page.locator("[name=name]").fill("Azure " + mode);
+      await expect(page.locator("[name=accountKey]")).toBeDisabled();
+      if (mode === "sas") {
+        await page.locator("[name=accountName]").fill("account");
+        await page.locator("[name=sasToken]").fill("sig=secret");
+      } else {
+        await expect(page.locator("#endpoint")).toBeDisabled();
+        await expect(page.locator("[name=accountName]")).toBeDisabled();
+        await page
+          .locator("[name=connectionString]")
+          .fill("UseDevelopmentStorage=true");
+      }
+      await page.locator("#connection-form button[type=submit]").click();
+      await expect(page.locator("#connection-dialog")).not.toBeVisible();
+      submitted = await page.evaluate(() => window.submittedConnections.at(-1));
+      expect(submitted.azureAuth).toBe(mode);
+      expect(submitted.accountKey).toBeUndefined();
+      expect(submitted.password).toBeUndefined();
+      if (mode === "connectionString")
+        expect(submitted.sasToken).toBeUndefined();
+    }
+    for (const mode of ["file", "default"]) {
+      await page.locator("#add-connection").click();
+      await page.locator("#provider").selectOption("Google Cloud Storage");
+      await page.locator("#gcs-auth").selectOption(mode);
+      await page.locator("[name=name]").fill("Google " + mode);
+      await expect(page.locator("[name=serviceAccountJson]")).toBeDisabled();
+      await expect(page.locator("[name=projectId]")).toHaveAttribute(
+        "required",
+        "",
+      );
+      await page.locator("[name=projectId]").fill("project");
+      if (mode === "file")
+        await page.locator("[name=keyFilename]").fill("/private/key.json");
+      else await expect(page.locator("[name=keyFilename]")).toBeDisabled();
+      await page.locator("#connection-form button[type=submit]").click();
+      await expect(page.locator("#connection-dialog")).not.toBeVisible();
+      submitted = await page.evaluate(() => window.submittedConnections.at(-1));
+      expect(submitted.googleAuth).toBe(mode);
+      expect(submitted.serviceAccountJson).toBeUndefined();
+      expect(submitted.connectionString).toBeUndefined();
+      if (mode === "file")
+        expect(submitted.keyFilename).toBe("/private/key.json");
+      else expect(submitted.keyFilename).toBeUndefined();
+    }
     expect(errors).toEqual([]);
     console.log(
       "Provider connection form smoke passed (Swift, Azure, GCS, S3).",

@@ -25,6 +25,17 @@ function capabilities(connection = {}) {
         multipart: false,
       };
     case "Azure Blob Storage":
+      return {
+        ...defaults,
+        multipart: false,
+        signedUrl:
+          connection.azureAuth !== "sas" &&
+          !connection.sasToken &&
+          (!connection.connectionString ||
+            /(?:^|;)AccountKey=|^UseDevelopmentStorage=true(?:;|$)/i.test(
+              connection.connectionString,
+            )),
+      };
     case "Google Cloud Storage":
       return { ...defaults, multipart: false };
     default:

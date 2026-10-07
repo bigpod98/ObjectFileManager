@@ -93,9 +93,13 @@ async function selectConnection(id) {
       ? "Azure Blob Storage · Account endpoint"
       : state.profile.provider === "Google Cloud Storage"
         ? `Google Cloud Storage${state.profile.projectId ? ` · ${state.profile.projectId}` : ""}`
-        : "Amazon S3 · Regional endpoint");
+        : state.profile.provider === "OpenStack Swift"
+          ? "OpenStack Swift · Keystone"
+          : "Amazon S3 · Regional endpoint");
   $("#provider-label").textContent = state.profile.provider;
-  $("#refresh-swift").hidden = state.profile.provider !== "OpenStack Swift";
+  $("#refresh-swift").hidden =
+    state.profile.provider !== "OpenStack Swift" ||
+    state.profile.swiftAuth === "keystone";
   $("#refresh-swift").disabled = !!state.profile.locked;
   const noun = storageNoun();
   $("#bucket-label").textContent = noun.toUpperCase();
@@ -445,6 +449,39 @@ for (const id of ["#add-small", "#add-connection", "#connect-first"])
 for (const id of ["#upload-top", "#queue-upload"]) $(id).onclick = newUpload;
 for (const b of document.querySelectorAll("[data-close]"))
   b.onclick = () => document.getElementById(b.dataset.close).close();
+function updateAuthenticationFields() {
+  const kind =
+    $("#provider").value === "OpenStack Swift"
+      ? "swift"
+      : $("#provider").value === "Azure Blob Storage"
+        ? "azure"
+        : $("#provider").value === "Google Cloud Storage"
+          ? "gcs"
+          : "s3";
+  const mode = $("#" + kind + "-auth")?.value;
+  for (const group of document.querySelectorAll("[data-auth-fields]")) {
+    const [provider, modes] = group.dataset.authFields.split(":");
+    const active = provider === kind && modes.split(",").includes(mode);
+    group.hidden = !active;
+    for (const input of group.querySelectorAll("input, textarea, select")) {
+      input.disabled = !active;
+      input.required = active && input.dataset.required !== undefined;
+    }
+  }
+  const endpointHidden =
+    kind === "gcs" ||
+    (kind === "swift" && mode === "keystone") ||
+    (kind === "azure" && mode === "connectionString");
+  $("#endpoint-field").hidden = endpointHidden;
+  $("#endpoint").disabled = endpointHidden;
+  $("#endpoint").required =
+    !endpointHidden &&
+    (kind === "swift" ||
+      (kind === "s3" && $("#provider").value !== "Amazon S3"));
+  $("[name=projectId]").required = kind === "gcs" && mode !== "json";
+}
+for (const kind of ["swift", "azure", "gcs"])
+  $("#" + kind + "-auth").onchange = updateAuthenticationFields;
 $("#provider").onchange = () => {
   const p = $("#provider").value;
   const kind =
@@ -458,7 +495,7 @@ $("#provider").onchange = () => {
   for (const group of document.querySelectorAll("[data-provider-fields]")) {
     const active = group.dataset.providerFields === kind;
     group.hidden = !active;
-    for (const input of group.querySelectorAll("input, textarea")) {
+    for (const input of group.querySelectorAll("input, textarea, select")) {
       if (input.required) input.dataset.required = "";
       input.disabled = !active;
       input.required = active && input.dataset.required !== undefined;
@@ -499,12 +536,13 @@ $("#provider").onchange = () => {
           : "Use the S3 API endpoint, including https:// and an optional port.";
   $("#provider-help").textContent =
     kind === "swift"
-      ? "Connect with an existing Swift token. When it expires, use Refresh Swift token to keep your queued batches. A configured account TempURL key enables download links."
+      ? "Use an existing token or sign in through Keystone for automatic token refresh. A configured account TempURL key enables download links."
       : kind === "azure"
-        ? "Connect with a storage account key. Containers appear in the browser like S3 buckets."
+        ? "Connect with an account key, SAS token, or connection string. Containers appear in the browser like S3 buckets."
         : kind === "gcs"
-          ? "Connect to Google Cloud Storage with a service account JSON key. The account needs permission for the buckets you use; a project ID is needed to list buckets."
+          ? "Use a service account JSON key, a key file, or Application Default Credentials configured on this device. A project ID is needed to list buckets."
           : "Connect using S3 API credentials.";
+  updateAuthenticationFields();
 };
 $("#provider").onchange();
 $("#connection-form").onsubmit = async (e) => {
