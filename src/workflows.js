@@ -56,7 +56,7 @@ function modalAction(selector, fn, error = "#workflow-error") {
 }
 function requireLocation() {
   if (!state.profile || !state.bucket) {
-    toast("Open a bucket first.");
+    toast(`Open a ${storageNoun()} first.`);
     return false;
   }
   return true;
@@ -154,7 +154,7 @@ function renderLocations() {
           `<button data-location="${i}" title="${esc(state.profiles.find((p) => p.id === l.profile)?.name || "Unavailable connection")} / ${esc(l.bucket)}/${esc(l.prefix)}"><span>${l.saved ? "★" : "◷"}</span><span>${esc(l.bucket)}/${esc(l.prefix)}</span></button>`,
       )
       .join("") ||
-    '<p class="form-note">Bookmark a bucket or folder to keep it here.</p>';
+    `<p class="form-note">Bookmark a ${storageNoun()} or folder to keep it here.</p>`;
   for (const button of $("#locations").querySelectorAll("button"))
     button.onclick = act(async () => {
       const loc = rows[+button.dataset.location];
@@ -236,7 +236,7 @@ function previewOperation(action) {
     selection = [...state.selection.values()];
   workflow(
     `${action[0].toUpperCase() + action.slice(1)} selected objects`,
-    `<p class="destination">${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${selection.length} selected items. Folder selections expand to every object below the prefix.</p>${action === "delete" ? '<p class="warning">Deletion cannot be undone in buckets without versioning.</p>' : `<label>Destination bucket<input id="operation-bucket" value="${esc(ctx.bucket)}" /></label><label>Destination prefix<input id="operation-prefix" placeholder="destination/" /></label><p class="form-note">Paths relative to the current prefix are preserved. Existing destination objects are never replaced; conflicts fail safely.</p>`}<div class="modal-footer"><button id="operation-preview" class="primary">Preview exact changes →</button></div>`,
+    `<p class="destination">${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${selection.length} selected items. Folder selections expand to every object below the prefix.</p>${action === "delete" ? `<p class="warning">Deletion cannot be undone in ${storageNoun()}s without versioning.</p>` : `<label>Destination ${storageNoun()}<input id="operation-bucket" value="${esc(ctx.bucket)}" /></label><label>Destination prefix<input id="operation-prefix" placeholder="destination/" /></label><p class="form-note">Paths relative to the current prefix are preserved. Existing destination objects are never replaced; conflicts fail safely.</p>`}<div class="modal-footer"><button id="operation-preview" class="primary">Preview exact changes →</button></div>`,
   );
   modalAction("#operation-preview", async () => {
     const options = { ...ctx, sourcePrefix: ctx.prefix, selection, action };
@@ -244,7 +244,7 @@ function previewOperation(action) {
       options.destinationBucket = $("#operation-bucket").value.trim();
       options.destinationPrefix = $("#operation-prefix").value;
       if (!options.destinationBucket)
-        throw Error("Enter a destination bucket.");
+        throw Error(`Enter a destination ${storageNoun()}.`);
     }
     const { token, plan } = await api["operations:preview"](options);
     const items = plan.items || [];
@@ -311,7 +311,7 @@ $("#sync-open").onclick = () => {
   if (!requireLocation()) return;
   const ctx = locationContext();
   workflow(
-    "Sync a local folder to S3",
+    `Sync a local folder to ${state.profile.provider}`,
     `<p class="destination">${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>Upload the selected local folder’s contents into this prefix. New and changed files are uploaded. Review every proposed change before applying.</p><label class="inline-check"><input id="sync-delete" type="checkbox" /> Delete remote objects missing locally</label><p class="form-note">Remote deletion is off by default. When selected, reviewed deletions run only after all uploads succeed.</p><div class="modal-footer"><button id="sync-compare" class="primary">Choose local folder & compare →</button></div>`,
   );
   modalAction("#sync-compare", async () => {
@@ -374,7 +374,9 @@ async function openObject(key) {
       [
         "#url-create",
         "signedUrl",
-        "Configure a Swift TempURL key in a new connection to generate temporary links.",
+        state.profile.provider === "OpenStack Swift"
+          ? "Configure a Swift TempURL key in a new connection to generate temporary links."
+          : "Generating download links requires an Azure account key connection.",
       ],
     ]) {
       const button = $(selector);

@@ -462,3 +462,33 @@ test("GCS rejects range reads before making any request", async (t) => {
   );
   assert.equal(requests.length, 0);
 });
+
+test("GCS key files and explicit default credentials preserve SDK authentication options", (t) => {
+  const options = [];
+  class Storage {
+    constructor(value) {
+      options.push(value);
+    }
+  }
+  t.mock.getter(require("@google-cloud/storage"), "Storage", () => Storage);
+  client({
+    googleAuth: "file",
+    projectId: "project",
+    keyFilename: "/private/key.json",
+  });
+  client({ googleAuth: "default", projectId: "project" });
+  assert.deepEqual(options, [
+    { projectId: "project", keyFilename: "/private/key.json" },
+    { projectId: "project" },
+  ]);
+  assert.throws(
+    () =>
+      client({
+        googleAuth: "file",
+        projectId: "project",
+        keyFilename: "relative.json",
+      }),
+    /absolute path/,
+  );
+  assert.throws(() => client({ googleAuth: "default" }), /project ID/);
+});

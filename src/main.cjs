@@ -25,6 +25,7 @@ const {
   refreshSwiftToken,
 } = require("./profiles.cjs");
 const refreshingProfiles = new Set();
+const removingProfiles = new Set();
 let win,
   queue,
   workspace,
@@ -43,6 +44,8 @@ function publicProfiles() {
   return profiles.map(publicProfile);
 }
 function getClient(id) {
+  if (removingProfiles.has(id))
+    throw new Error("This connection is being removed.");
   if (refreshingProfiles.has(id))
     throw new Error("Wait for this connection’s token refresh to finish.");
   if (clients.has(id)) return clients.get(id);
@@ -185,6 +188,8 @@ else
       return publicProfiles();
     });
     handle("connection:refresh-swift", async ({ id, token } = {}) => {
+      if (removingProfiles.has(id))
+        throw new Error("This connection is being removed.");
       if (refreshingProfiles.has(id))
         throw new Error("Wait for this connection’s token refresh to finish.");
       const previous = profiles.find((p) => p.id === id);
@@ -222,6 +227,8 @@ else
       return publicProfiles();
     });
     handle("connection:remove", async (id) => {
+      if (removingProfiles.has(id))
+        throw new Error("This connection is being removed.");
       if (refreshingProfiles.has(id))
         throw new Error("Wait for this connection’s token refresh to finish.");
       if (
@@ -230,6 +237,7 @@ else
           .some((j) => j.profile === id && !["complete"].includes(j.state))
       )
         throw new Error("Remove unfinished batches for this connection first.");
+      removingProfiles.add(id);
       const previous = profiles;
       profiles = profiles.filter((p) => p.id !== id);
       try {
@@ -237,6 +245,8 @@ else
       } catch (e) {
         profiles = previous;
         throw e;
+      } finally {
+        removingProfiles.delete(id);
       }
       clients.get(id)?.destroy();
       clients.delete(id);

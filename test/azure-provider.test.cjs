@@ -650,3 +650,86 @@ test("Azure signs read-only download URLs for custom endpoints without exposing 
   assert.ok(signed.searchParams.get("sig"));
   assert.ok(!signed.toString().includes(key));
 });
+
+test("Azure SAS and connection string clients use native authentication and signing capabilities", async () => {
+  const urls = [],
+    strings = [];
+  const native = {
+    getContainerClient: () => ({
+      getBlockBlobClient: () => ({ generateSasUrl: () => "signed" }),
+    }),
+  };
+  class BlobServiceClient {
+    constructor(url, credential) {
+      urls.push([url, credential]);
+      return native;
+    }
+    static fromConnectionString(value) {
+      strings.push(value);
+      return native;
+    }
+  }
+  const sdk = {
+    BlobServiceClient,
+    BlobSASPermissions: { parse: (value) => value },
+  };
+  const sas = client(
+    { accountName: "account", sasToken: "?sig=private", azureAuth: "sas" },
+    { sdk },
+  );
+  assert.deepEqual(urls, [
+    ["https://account.blob.core.windows.net?sig=private", undefined],
+  ]);
+  assert.equal(sas.capabilities.signedUrl, false);
+  assert.throws(
+    () => sas.signedUrl({ Bucket: "container", Key: "object" }, 60),
+    /account key/,
+  );
+  const connectionString =
+    "AccountName=account;AccountKey=key;DefaultEndpointsProtocol=https";
+  const keyed = client({ connectionString }, { sdk });
+  assert.deepEqual(strings, [connectionString]);
+  assert.equal(keyed.capabilities.signedUrl, true);
+  assert.equal(
+    await keyed.signedUrl({ Bucket: "container", Key: "object" }, 60),
+    "signed",
+  );
+});
+
+test("Azure native SDK preserves SAS authentication on custom endpoints", async (t) => {
+  const http = require("node:http");
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push(new URL(req.url, "http://localhost"));
+    res.writeHead(200, { "content-type": "application/xml" });
+    res.end(
+      '<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Containers><Container><Name>archive</Name></Container></Containers><NextMarker /></EnumerationResults>',
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const endpoint = `http://127.0.0.1:${server.address().port}/account`;
+  for (const profile of [
+    {
+      accountName: "account",
+      endpoint,
+      sasToken: "sv=2025-01-05&sig=private%2Bsignature",
+    },
+    {
+      connectionString: `BlobEndpoint=${endpoint};SharedAccessSignature=sv=2025-01-05&sig=private%2Bsignature`,
+    },
+  ]) {
+    const adapter = client(profile);
+    const result = await adapter.send(command("ListBuckets"));
+    assert.equal(result.Buckets[0].Name, "archive");
+    assert.equal(adapter.capabilities.signedUrl, false);
+  }
+  assert.equal(requests.length, 2);
+  for (const url of requests) {
+    assert.equal(url.pathname.replace(/\/$/, ""), "/account");
+    assert.equal(url.searchParams.get("sig"), "private+signature");
+  }
+});
