@@ -1,6 +1,6 @@
 {
   "name": "s3-browser",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A desktop browser and durable bulk transfer client for S3-compatible, OpenStack Swift, Azure Blob and Google Cloud Storage",
   "license": "MIT",
   "author": {
