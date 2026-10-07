@@ -128,7 +128,7 @@ function server(env) {
       return new Response(asset.bytes);
     }
     assert.equal(options.redirect, "error");
-    if (route === "/commits/tags%2Fv1.2.3")
+    if (route === "/commits/refs%2Ftags%2Fv1.2.3")
       return json({ sha: state.remoteSha });
     if (route === "/releases" && method === "GET")
       return json(

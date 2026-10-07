@@ -131,10 +131,10 @@ async function publish(root, env = process.env, request = fetch) {
     return matches[0];
   }
   async function verifyTag() {
-    // Explicit tags/ avoids a same-named branch and resolves annotated tags to
+    // Explicit refs/tags/ avoids a same-named branch and resolves annotated tags to
     // their commit, unlike comparing a Git reference's tag-object SHA directly.
     const remote = await api(
-      `/commits/${encodeURIComponent(`tags/${release.tag}`)}`,
+      `/commits/${encodeURIComponent(`refs/tags/${release.tag}`)}`,
     );
     if (remote.sha !== release.sha)
       throw new Error(
