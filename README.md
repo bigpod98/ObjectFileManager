@@ -145,8 +145,6 @@ HTTPS uses normal certificate validation. Private CAs can be supplied through `N
 
 ## Development and verification
 
-Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
-
 ```sh
 npm test              # Unit tests; service-backed integrations skip without endpoints
 npm run test:desktop  # Electron smoke test; requires a display
