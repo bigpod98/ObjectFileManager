@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { finished } = require("node:stream/promises");
 const asar = require("@electron/asar");
 const afterPack = require("../scripts/third-party-notices.cjs");
 const { generate, inventory, verifyBundled, NOTICE_FILE } = afterPack;
@@ -152,7 +153,8 @@ test("afterPack writes licenses and rejects uncovered bundled packages", async (
   bundle("node_modules/@scope/beta", { name: "@scope/beta", version: "2.0.0" });
   bundle("node_modules/delta", { name: "delta", version: "5.0.0" });
   fs.mkdirSync(path.dirname(archive), { recursive: true });
-  await asar.createPackage(app, archive);
+  // asar 3 returns the output stream before its final writes have completed.
+  await finished(await asar.createPackage(app, archive));
   await afterPack({
     appOutDir: out,
     electronPlatformName: "linux",
@@ -174,7 +176,7 @@ test("afterPack writes licenses and rejects uncovered bundled packages", async (
   });
   bundle("node_modules/@scope/beta", { name: "@scope/beta", version: "2.0.1" });
   bundle("node_modules/devtool", { name: "devtool", version: "3.0.0" });
-  await asar.createPackage(app, archive);
+  await finished(await asar.createPackage(app, archive));
   assert.throws(
     () => verifyBundled(archive, inventory(dir)),
     (error) => {

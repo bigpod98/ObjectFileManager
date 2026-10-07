@@ -1,6 +1,6 @@
 # Native Linux packages
 
-ObjectFileManager (OFM) replaces S3 Browser beginning with version 1.0.3. The
+ObjectFileManager (OFM) replaces S3 Browser beginning with version 1.0.4. The
 package and command are `objectfilemanager`. DEB, RPM, and Arch metadata declare
 replacement of the old package. The desktop ID `com.tuxbase.s3browser`, Electron
 storage/keyring identity `s3-browser`, and existing profile directory stay stable

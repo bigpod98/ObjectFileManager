@@ -10,7 +10,7 @@ A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3
 
 ## Install
 
-ObjectFileManager (OFM) was previously named S3 Browser. Starting with 1.0.3,
+ObjectFileManager (OFM) was previously named S3 Browser. Starting with 1.0.4,
 packages and the executable are named `objectfilemanager`. Native packages
 replace the old `s3-browser` package. Existing connections, bookmarks, and
 transfer history continue to use the same profile directory and keyring identity.
@@ -21,15 +21,15 @@ Building from source places native Linux packages in `dist/native/`:
 
 | Distribution    | Package                                             | Install                                                                          |
 | --------------- | --------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Arch / ALPM     | `alpm/objectfilemanager-1.0.3-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/objectfilemanager-1.0.3-1-x86_64.pkg.tar.zst` |
-| Debian / Ubuntu | `deb/objectfilemanager_1.0.3-1_amd64.deb`           | `sudo apt install ./dist/native/deb/objectfilemanager_1.0.3-1_amd64.deb`         |
-| Fedora / RPM    | `rpm/objectfilemanager-1.0.3-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/objectfilemanager-1.0.3-1.x86_64.rpm`        |
+| Arch / ALPM     | `alpm/objectfilemanager-1.0.4-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/objectfilemanager-1.0.4-1-x86_64.pkg.tar.zst` |
+| Debian / Ubuntu | `deb/objectfilemanager_1.0.4-1_amd64.deb`           | `sudo apt install ./dist/native/deb/objectfilemanager_1.0.4-1_amd64.deb`         |
+| Fedora / RPM    | `rpm/objectfilemanager-1.0.4-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/objectfilemanager-1.0.4-1.x86_64.rpm`        |
 
 After installation, open **ObjectFileManager** from your application menu or run `objectfilemanager`. Your connections and transfer history stay in your user profile when the package is removed. See [packaging documentation](packaging/README.md) for build and validation details.
 
 The table shows x86_64 filenames; ARM64 builds use `arm64` for DEB and `aarch64` for RPM/Arch.
 
-A portable alternative is `objectfilemanager-1.0.3-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `objectfilemanager` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/objectfilemanager` can also be launched directly.
+A portable alternative is `objectfilemanager-1.0.4-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `objectfilemanager` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/objectfilemanager` can also be launched directly.
 
 To run from source, install Node.js 22.13 or later and a recent npm:
 

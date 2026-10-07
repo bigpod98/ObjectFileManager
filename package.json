@@ -1,6 +1,6 @@
 {
   "name": "objectfilemanager",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A desktop browser and durable bulk transfer client for S3-compatible, OpenStack Swift, Azure Blob and Google Cloud Storage",
   "license": "MIT",
   "author": {
