@@ -11,9 +11,8 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
-// Keep Electron's storage/keyring identity across the public rename. This also
-// preserves the profile directory and single-instance lock of older releases.
-app.setName("s3-browser");
+// Use the package name for Electron's profile directory and keyring identity.
+app.setName("objectfilemanager");
 const { Queue } = require("./queue.cjs");
 const storage = require("./storage.cjs");
 const downloads = require("./downloads.cjs");

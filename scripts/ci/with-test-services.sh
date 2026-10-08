@@ -7,7 +7,7 @@ if [[ $# == 0 ]]; then
   echo 'Usage: bash scripts/ci/with-test-services.sh COMMAND [ARG...]' >&2
   exit 2
 fi
-service_dir=${S3BROWSER_TEST_SERVICE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/s3browser-test-services}
+service_dir=${OBJECTFILEMANAGER_TEST_SERVICE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/objectfilemanager-test-services}
 minio="$service_dir/bin/minio"
 azurite="$service_dir/azurite/node_modules/.bin/azurite-blob"
 if [[ ! -x "$minio" || ! -x "$azurite" ]]; then
@@ -49,14 +49,14 @@ const net = require('node:net');
 })();
 JS
 )
-export S3_TEST_ACCESS_KEY=s3browser-test
-export S3_TEST_SECRET_KEY=s3browser-test-secret
+export S3_TEST_ACCESS_KEY=objectfilemanager-test
+export S3_TEST_SECRET_KEY=objectfilemanager-test-secret
 export S3_TEST_ENDPOINT="http://127.0.0.1:$minio_port"
 export AZURITE_INTEGRATION=1
-export AZURITE_TEST_ACCOUNT_NAME=s3browsertest
+export AZURITE_TEST_ACCOUNT_NAME=objectfilemanagertest
 export AZURITE_TEST_ACCOUNT_KEY=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
 export AZURITE_TEST_ENDPOINT="http://127.0.0.1:$azurite_port/$AZURITE_TEST_ACCOUNT_NAME"
-MINIO_ROOT_USER=s3browser-test MINIO_ROOT_PASSWORD=s3browser-test-secret \
+MINIO_ROOT_USER=objectfilemanager-test MINIO_ROOT_PASSWORD=objectfilemanager-test-secret \
   MINIO_BROWSER=off "$minio" server --address "127.0.0.1:$minio_port" "$root/minio" >"$root/minio.log" 2>&1 &
 minio_pid=$!
 AZURITE_ACCOUNTS="$AZURITE_TEST_ACCOUNT_NAME:$AZURITE_TEST_ACCOUNT_KEY" \

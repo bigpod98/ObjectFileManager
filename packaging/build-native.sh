@@ -7,7 +7,7 @@ case "$format" in
     cp -a /input/payload /build/deb
     mkdir -p /build/deb/DEBIAN
     cp /input/control /build/deb/DEBIAN/control
-    desktop-file-validate /build/deb/usr/share/applications/com.tuxbase.s3browser.desktop
+    desktop-file-validate /build/deb/usr/share/applications/com.tuxbase.objectfilemanager.desktop
     dpkg-deb --root-owner-group -Zxz -z3 --build /build/deb /output/
     for package in /output/*.deb; do dpkg-deb --info "$package"; done
     ;;

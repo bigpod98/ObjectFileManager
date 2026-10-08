@@ -1,8 +1,5 @@
 # Generated from the shared, locally built Electron payload. No install-time downloads.
 pkgname=objectfilemanager
-conflicts=('s3-browser')
-replaces=('s3-browser<1.0.3')
-provides=('s3-browser')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Desktop browser and bulk transfer client for S3, Swift, Azure Blob and GCS storage'

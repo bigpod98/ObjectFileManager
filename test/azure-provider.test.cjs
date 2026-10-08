@@ -204,7 +204,7 @@ test("Azure streaming uploads retain destination guards, headers, metadata and p
       Key: "file",
       Body: f.body,
       IfNoneMatch: "*",
-      Metadata: { "s3browser-upload-token": "token", unicode: "é" },
+      Metadata: { "objectfilemanager-upload-token": "token", unicode: "é" },
       ContentType: "image/png",
       CacheControl: "private",
     },
@@ -234,7 +234,7 @@ test("Azure streaming uploads retain destination guards, headers, metadata and p
   f.head.metadata = options.metadata;
   assert.deepEqual(
     (await f.adapter.send(command("HeadObject", { Key: "file" }))).Metadata,
-    { "s3browser-upload-token": "token", unicode: "é" },
+    { "objectfilemanager-upload-token": "token", unicode: "é" },
   );
   assert.deepEqual(
     f.calls.find((x) => x[0] === "stage")[2],
@@ -510,9 +510,9 @@ test("Azure metadata saves retain interoperable external keys and escape reserve
     author: "external client",
     "custom-key": "a value",
     unicode: "é",
-    s3browser_metadata_encoding: "v1",
-    s3browser_meta_6162: "literal reserved key",
-    S3Browser_Meta_6162: "case variant",
+    objectfilemanager_metadata_encoding: "v1",
+    objectfilemanager_meta_6162: "literal reserved key",
+    ObjectFileManager_Meta_6162: "case variant",
   };
   f.head.metadata = { author: metadata.author };
   assert.deepEqual(
@@ -530,8 +530,8 @@ test("Azure metadata saves retain interoperable external keys and escape reserve
   );
   const stored = f.calls.find((x) => x[0] === "commit")[2].metadata;
   assert.equal(stored.author, "external client");
-  assert.equal(stored.s3browser_metadata_encoding, "v1");
-  assert.equal(stored.s3browser_meta_6162, undefined);
+  assert.equal(stored.objectfilemanager_metadata_encoding, "v1");
+  assert.equal(stored.objectfilemanager_meta_6162, undefined);
   f.head.metadata = stored;
   assert.deepEqual(
     (await f.adapter.send(command("HeadObject", { Key: "source" }))).Metadata,

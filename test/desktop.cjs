@@ -3,7 +3,9 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 (async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-ui-"));
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "objectfilemanager-ui-"),
+  );
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   const app = await electron.launch({
@@ -38,8 +40,10 @@ const path = require("node:path");
     await page
       .locator("#endpoint")
       .fill(process.env.S3_TEST_ENDPOINT || "http://127.0.0.1:19000");
-    await page.locator("[name=accessKeyId]").fill("s3browser-test");
-    await page.locator("[name=secretAccessKey]").fill("s3browser-test-secret");
+    await page.locator("[name=accessKeyId]").fill("objectfilemanager-test");
+    await page
+      .locator("[name=secretAccessKey]")
+      .fill("objectfilemanager-test-secret");
     await page.locator("#remember").uncheck();
     await page.getByRole("button", { name: "Save connection" }).click();
     await expect(page.locator("#connection-name")).toHaveText(
@@ -65,8 +69,8 @@ const path = require("node:path");
         endpoint: process.env.S3_TEST_ENDPOINT,
         region: "us-east-1",
         pathStyle: true,
-        accessKeyId: "s3browser-test",
-        secretAccessKey: "s3browser-test-secret",
+        accessKeyId: "objectfilemanager-test",
+        secretAccessKey: "objectfilemanager-test-secret",
       });
       const bucket = `desktop-test-${Date.now()}`;
       await s3.send(new CreateBucketCommand({ Bucket: bucket }));

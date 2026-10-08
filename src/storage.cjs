@@ -74,8 +74,9 @@ async function reconcileUpload(s3, job, entry, signal) {
   }
   try {
     if (
-      result.Metadata?.["s3browser-upload-token"] !== entry.uploadToken ||
-      result.Metadata?.["s3browser-sha256"] !== entry.sha256 ||
+      result.Metadata?.["objectfilemanager-upload-token"] !==
+        entry.uploadToken ||
+      result.Metadata?.["objectfilemanager-sha256"] !== entry.sha256 ||
       result.ContentLength !== entry.size
     )
       return false;
@@ -154,8 +155,8 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
     entry.uploadToken && entry.sha256
       ? {
           Metadata: {
-            "s3browser-upload-token": entry.uploadToken,
-            "s3browser-sha256": entry.sha256,
+            "objectfilemanager-upload-token": entry.uploadToken,
+            "objectfilemanager-sha256": entry.sha256,
           },
         }
       : {};

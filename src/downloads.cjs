@@ -22,7 +22,7 @@ function safeParts(relative, directory = false) {
         /[. ]$/.test(part) ||
         /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part) ||
         Buffer.byteLength(part) > 255 ||
-        part.startsWith(".s3browser-"),
+        part.startsWith(".objectfilemanager-"),
     )
   ) {
     throw new Error(
@@ -217,7 +217,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     .slice(0, 32);
   const temporary = path.join(
     path.dirname(destination),
-    `.s3browser-${hash}.part`,
+    `.objectfilemanager-${hash}.part`,
   );
   const stale = await statIfExists(temporary);
   if (stale) {

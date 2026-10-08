@@ -32,13 +32,13 @@ test(
       endpoint: process.env.S3_TEST_ENDPOINT,
       region: "us-east-1",
       pathStyle: true,
-      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "s3browser-test",
+      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "objectfilemanager-test",
       secretAccessKey:
-        process.env.S3_TEST_SECRET_KEY || "s3browser-test-secret",
+        process.env.S3_TEST_SECRET_KEY || "objectfilemanager-test-secret",
     });
-    const bucket = `s3browser-expansion-${Date.now()}-${process.pid}`;
+    const bucket = `objectfilemanager-expansion-${Date.now()}-${process.pid}`;
     const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "s3browser-expansion-"),
+      path.join(os.tmpdir(), "objectfilemanager-expansion-"),
     );
     const queue = new Queue(path.join(root, "queue.sqlite"), (...args) =>
       (args[1].kind === "download" ? downloads.transfer : storage.transfer)(

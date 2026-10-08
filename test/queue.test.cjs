@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { Queue } = require("../src/queue.cjs");
 async function fixture(t, transfer = async () => {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "objectfilemanager-"));
   const db = path.join(root, "queue.sqlite");
   const q = new Queue(db, transfer);
   t.after(async () => {

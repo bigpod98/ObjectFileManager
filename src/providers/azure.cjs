@@ -1,8 +1,8 @@
 // Translate the application's object-storage commands to Azure's native Blob API.
 const { randomUUID, createHash } = require("node:crypto");
 const { setTimeout: delay } = require("node:timers/promises");
-const metadataPrefix = "s3browser_meta_";
-const metadataMarker = "s3browser_metadata_encoding";
+const metadataPrefix = "objectfilemanager_meta_";
+const metadataMarker = "objectfilemanager_metadata_encoding";
 function encodeMetadata(metadata) {
   if (metadata === undefined) return undefined;
   // Azure metadata identifiers cannot contain '-' and header values must be ASCII.

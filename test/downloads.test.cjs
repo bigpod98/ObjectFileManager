@@ -65,7 +65,7 @@ test("unsafe and nonportable object names reject without creating paths", async 
     "foo. ",
     "a/./b",
     "a\u0000b",
-    ".s3browser-stale.part",
+    ".objectfilemanager-stale.part",
   ]) {
     await assert.rejects(
       plan(
@@ -297,7 +297,7 @@ test("restart discards a stale partial file and downloads the full object", asyn
     .update(`${root}\0file.txt`)
     .digest("hex")
     .slice(0, 32);
-  const temporary = path.join(root, `.s3browser-${hash}.part`);
+  const temporary = path.join(root, `.objectfilemanager-${hash}.part`);
   await fs.writeFile(temporary, "stale partial from interrupted process");
   await transfer(
     { send: async () => ({ Body: Readable.from([Buffer.from("hello")]) }) },

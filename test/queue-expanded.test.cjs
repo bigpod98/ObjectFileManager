@@ -7,7 +7,9 @@ const { DatabaseSync } = require("node:sqlite");
 const { Queue, RateLimiter } = require("../src/queue.cjs");
 
 async function fixture(t, transfer = async () => {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-queue-"));
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "objectfilemanager-queue-"),
+  );
   const file = path.join(root, "queue.sqlite");
   const q = new Queue(file, transfer);
   t.after(async () => {
@@ -35,7 +37,9 @@ async function fixture(t, transfer = async () => {}) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("legacy database migrates without losing completed work and recovers both transfer kinds", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-migration-"));
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "objectfilemanager-migration-"),
+  );
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, "queue.sqlite");
   const old = new DatabaseSync(file);

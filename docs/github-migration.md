@@ -1,20 +1,20 @@
 # Moving to GitHub
 
-The prepared destination is `https://github.com/bigpod98/S3Browser`. These changes
+The prepared destination is `https://github.com/bigpod98/ObjectFileManager`. These changes
 update project links, move workflows from `.forgejo/workflows` to
 `.github/workflows`, and adapt release publishing to GitHub.com. Preparation does
 not create a repository, change remotes, push source, or change visibility.
 
 ## Repository setup
 
-Create an **empty** `bigpod98/S3Browser` repository with the desired visibility.
+Create an **empty** `bigpod98/ObjectFileManager` repository with the desired visibility.
 Do not initialize a README, license, or `.gitignore`; they already exist here.
 Commit the migration changes locally before transferring `main`.
 
 Keep the Forgejo remote available while checking the move:
 
 ```sh
-git remote add github https://github.com/bigpod98/S3Browser.git
+git remote add github https://github.com/bigpod98/ObjectFileManager.git
 git push github main:main
 ```
 
@@ -62,9 +62,8 @@ repository available as a historical archive. Existing binary releases can be
 copied separately when authorized; this preparation does not rebuild or publish
 historical releases.
 
-The maintainer's name, contact address, MIT copyright and
-`com.tuxbase.s3browser` application/desktop identifiers remain stable. They are
-not repository-host links and do not need to change for GitHub hosting.
+The application/desktop ID is `com.tuxbase.objectfilemanager`. The maintainer's
+name, contact address, and MIT copyright are independent of repository hosting.
 
 The [open-source review](open-source-review.md) records validation of the earlier
 Forgejo version. GitHub workflow execution must be verified separately.

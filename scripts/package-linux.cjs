@@ -59,11 +59,11 @@ fs.symlinkSync(
 );
 copy(
   "packaging/objectfilemanager.desktop",
-  "usr/share/applications/com.tuxbase.s3browser.desktop",
+  "usr/share/applications/com.tuxbase.objectfilemanager.desktop",
 );
 copy(
   "assets/icon.png",
-  "usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png",
+  "usr/share/icons/hicolor/512x512/apps/com.tuxbase.objectfilemanager.png",
 );
 copy("README.md", "usr/share/doc/objectfilemanager/README.md");
 // afterPack writes the application license and dependency notices into the
@@ -141,13 +141,13 @@ try {
       "--platform",
       arch.platform,
       "-t",
-      `s3browser-packaging-${format}-${arch.electron}`,
+      `objectfilemanager-packaging-${format}-${arch.electron}`,
       "-f",
       `packaging/${format}/Dockerfile${format === "alpm" && arch.electron === "arm64" ? ".arm64" : ""}`,
       "packaging",
     ]);
     containerTask({
-      image: `s3browser-packaging-${format}-${arch.electron}`,
+      image: `objectfilemanager-packaging-${format}-${arch.electron}`,
       platform: arch.platform,
       command: ["bash", "/recipes/build-native.sh", format],
       inputs: [

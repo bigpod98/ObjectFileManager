@@ -27,9 +27,9 @@ test(
   async (t) => {
     const s3 = storage.client({
       endpoint: process.env.S3_TEST_ENDPOINT,
-      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "s3browser-test",
+      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "objectfilemanager-test",
       secretAccessKey:
-        process.env.S3_TEST_SECRET_KEY || "s3browser-test-secret",
+        process.env.S3_TEST_SECRET_KEY || "objectfilemanager-test-secret",
       region: "us-east-1",
       pathStyle: true,
     });

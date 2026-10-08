@@ -23,13 +23,13 @@ test(
       endpoint: process.env.S3_TEST_ENDPOINT,
       region: "us-east-1",
       pathStyle: true,
-      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "s3browser-test",
+      accessKeyId: process.env.S3_TEST_ACCESS_KEY || "objectfilemanager-test",
       secretAccessKey:
-        process.env.S3_TEST_SECRET_KEY || "s3browser-test-secret",
+        process.env.S3_TEST_SECRET_KEY || "objectfilemanager-test-secret",
     });
-    const bucket = `s3browser-${Date.now()}`;
+    const bucket = `objectfilemanager-${Date.now()}`;
     const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "s3browser-integration-"),
+      path.join(os.tmpdir(), "objectfilemanager-integration-"),
     );
     const q = new Queue(path.join(root, "queue.sqlite"), transfer);
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));

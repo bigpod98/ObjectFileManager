@@ -9,7 +9,9 @@ const exec = promisify(execFile);
 
 for (const code of [0, 7]) {
   test(`disposable service runner cleans up after command exit ${code}`, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-ci-test-"));
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "objectfilemanager-ci-test-"),
+    );
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const fixture = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -38,10 +40,10 @@ http.createServer((req, res) => { res.statusCode = minio ? 200 : 400; res.end();
         "-e",
         `const assert = require('node:assert/strict');
        assert.match(process.env.S3_TEST_ENDPOINT, /^http:\\/\\/127\\.0\\.0\\.1:/);
-       assert.match(process.env.AZURITE_TEST_ENDPOINT, /\\/s3browsertest$/);
+       assert.match(process.env.AZURITE_TEST_ENDPOINT, /\\/objectfilemanagertest$/);
        assert.equal(process.env.AZURITE_INTEGRATION, '1');
-       assert.equal(process.env.S3_TEST_ACCESS_KEY, 's3browser-test');
-       assert.equal(process.env.S3_TEST_SECRET_KEY, 's3browser-test-secret');
+       assert.equal(process.env.S3_TEST_ACCESS_KEY, 'objectfilemanager-test');
+       assert.equal(process.env.S3_TEST_SECRET_KEY, 'objectfilemanager-test-secret');
        process.exit(${code});`,
       ],
       {
@@ -49,7 +51,7 @@ http.createServer((req, res) => { res.statusCode = minio ? 200 : 400; res.end();
           ...process.env,
           S3_TEST_ACCESS_KEY: "inherited-key",
           S3_TEST_SECRET_KEY: "inherited-secret",
-          S3BROWSER_TEST_SERVICE_DIR: root,
+          OBJECTFILEMANAGER_TEST_SERVICE_DIR: root,
           FIXTURE_RECORD_DIR: root,
         },
         timeout: 15000,

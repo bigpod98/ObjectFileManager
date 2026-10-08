@@ -32,9 +32,9 @@ test(
   "native Azure workflows against disposable Azurite",
   { skip: process.env.AZURITE_INTEGRATION !== "1", timeout: 120000 },
   async (t) => {
-    const containerName = `s3browser-azurite-${randomUUID()}`;
+    const containerName = `objectfilemanager-azurite-${randomUUID()}`;
     const accountName =
-      process.env.AZURITE_TEST_ACCOUNT_NAME || "s3browsertest";
+      process.env.AZURITE_TEST_ACCOUNT_NAME || "objectfilemanagertest";
     const accountKey =
       process.env.AZURITE_TEST_ACCOUNT_KEY ||
       Buffer.alloc(32, 7).toString("base64");
@@ -117,8 +117,8 @@ test(
       metadata: {
         author: "external client",
         "custom-key": "é",
-        s3browser_metadata_encoding: "user value",
-        s3browser_meta_6162: "reserved value",
+        objectfilemanager_metadata_encoding: "user value",
+        objectfilemanager_meta_6162: "reserved value",
       },
     });
     const externalMetadata = await sdkBlob.getProperties();
@@ -132,8 +132,8 @@ test(
       {
         author: "external client",
         "custom-key": "é",
-        s3browser_metadata_encoding: "user value",
-        s3browser_meta_6162: "reserved value",
+        objectfilemanager_metadata_encoding: "user value",
+        objectfilemanager_meta_6162: "reserved value",
       },
     );
     await sdkBlob.stageBlock(
@@ -203,7 +203,10 @@ test(
         ContentLength: bytes.length,
         ContentType: "application/octet-stream",
         CacheControl: "private",
-        Metadata: { "s3browser-upload-token": "test-token", unicode: "é" },
+        Metadata: {
+          "objectfilemanager-upload-token": "test-token",
+          unicode: "é",
+        },
         IfNoneMatch: "*",
       },
       { abortSignal: signal },
@@ -218,7 +221,7 @@ test(
       createHash("md5").update(bytes).digest("base64"),
     );
     assert.deepEqual(head.Metadata, {
-      "s3browser-upload-token": "test-token",
+      "objectfilemanager-upload-token": "test-token",
       unicode: "é",
     });
     assert.ok(
@@ -331,7 +334,7 @@ test(
     assert.equal(response.status, 200);
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
     const directory = await fs.mkdtemp(
-      path.join(os.tmpdir(), "s3browser-azure-sync-"),
+      path.join(os.tmpdir(), "objectfilemanager-azure-sync-"),
     );
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(path.join(directory, "source.bin"), bytes);

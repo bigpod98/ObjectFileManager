@@ -10,7 +10,7 @@ for (const format of formats) {
   if (!["deb", "rpm", "alpm"].includes(format))
     throw new Error("Formats: deb rpm alpm");
   containerTask({
-    image: `s3browser-packaging-${format}-${arch.electron}`,
+    image: `objectfilemanager-packaging-${format}-${arch.electron}`,
     platform: arch.platform,
     command: ["bash", "/recipes/validate-native.sh", format],
     env: {
@@ -21,9 +21,6 @@ for (const format of formats) {
       S3_SMOKE_TIMEOUT: arch.electron === "arm64" ? "180" : "40",
     },
     inputs: [
-      ...(process.env.S3_TEST_UPGRADE_DIR
-        ? [[path.resolve(process.env.S3_TEST_UPGRADE_DIR, format), "/legacy"]]
-        : []),
       [path.join(root, "dist/native", format), "/packages"],
       [path.join(root, "packaging"), "/recipes"],
     ],

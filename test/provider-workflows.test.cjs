@@ -26,8 +26,11 @@ test("native uploads retain streaming, throttling, conditions and recovery metad
       assert.equal(options.abortSignal, signal);
       assert.equal(input.IfNoneMatch, "*");
       assert.equal(input.ContentLength, bytes.length);
-      assert.equal(input.Metadata["s3browser-upload-token"], "operation");
-      assert.equal(input.Metadata["s3browser-sha256"], sha256);
+      assert.equal(
+        input.Metadata["objectfilemanager-upload-token"],
+        "operation",
+      );
+      assert.equal(input.Metadata["objectfilemanager-sha256"], sha256);
       assert.ok(input.Body[Symbol.asyncIterator]);
       const chunks = [];
       for await (const chunk of input.Body) chunks.push(chunk);

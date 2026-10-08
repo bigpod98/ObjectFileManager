@@ -10,21 +10,23 @@ A local desktop browser for Amazon S3, Cloudflare R2, Ceph RGW, MinIO, custom S3
 
 ## Install
 
-[Releases](https://github.com/bigpod98/S3Browser/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#github-actions-and-releases) for how releases are built and validated.
+The package and executable are named `objectfilemanager`.
+
+[Releases](https://github.com/bigpod98/ObjectFileManager/releases) provide **DEB, RPM, Arch and portable archives for Linux x86_64 and ARM64**, with a `SHA256SUMS` file. Packages and checksums are not signed: the checksums detect corrupted downloads, not a compromised release host. The features below describe the current source, which may be newer than the latest release. See [CI and release setup](packaging/README.md#github-actions-and-releases) for how releases are built and validated.
 
 Building from source places native Linux packages in `dist/native/`:
 
 | Distribution    | Package                                             | Install                                                                          |
 | --------------- | --------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Arch / ALPM     | `alpm/objectfilemanager-1.0.4-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/objectfilemanager-1.0.4-1-x86_64.pkg.tar.zst` |
-| Debian / Ubuntu | `deb/objectfilemanager_1.0.4-1_amd64.deb`           | `sudo apt install ./dist/native/deb/objectfilemanager_1.0.4-1_amd64.deb`         |
-| Fedora / RPM    | `rpm/objectfilemanager-1.0.4-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/objectfilemanager-1.0.4-1.x86_64.rpm`        |
+| Arch / ALPM     | `alpm/objectfilemanager-1.0.5-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./dist/native/alpm/objectfilemanager-1.0.5-1-x86_64.pkg.tar.zst` |
+| Debian / Ubuntu | `deb/objectfilemanager_1.0.5-1_amd64.deb`           | `sudo apt install ./dist/native/deb/objectfilemanager_1.0.5-1_amd64.deb`         |
+| Fedora / RPM    | `rpm/objectfilemanager-1.0.5-1.x86_64.rpm`          | `sudo dnf install ./dist/native/rpm/objectfilemanager-1.0.5-1.x86_64.rpm`        |
 
 After installation, open **ObjectFileManager** from your application menu or run `objectfilemanager`. Your connections and transfer history stay in your user profile when the package is removed. See [packaging documentation](packaging/README.md) for build and validation details.
 
 The table shows x86_64 filenames; ARM64 builds use `arm64` for DEB and `aarch64` for RPM/Arch.
 
-A portable alternative is `objectfilemanager-1.0.4-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `objectfilemanager` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/objectfilemanager` can also be launched directly.
+A portable alternative is `objectfilemanager-1.0.5-linux-x64.tar.gz` (`linux-arm64.tar.gz` for ARM64): extract it and open `objectfilemanager` inside the extracted folder. Keep its accompanying files together, including its license notices. After `npm run pack`, `dist/linux-unpacked/objectfilemanager` can also be launched directly.
 
 To run from source, install Node.js 22.13 or later and a recent npm:
 
@@ -84,7 +86,7 @@ Choose **Sync folder**, select a local folder, and inspect the comparison before
 
 The preview classifies new, changed, unchanged, remote-only, conflicting, and skipped paths. It reads local files to calculate checksums, compares sizes and supported full-object checksums or suitable single-part MD5 ETags, and treats uncertain equality as changed. Multipart ETags are not treated as file MD5 hashes. Symlinks and special files are skipped; remote paths overlapping skipped or conflicting local paths are protected from deletion.
 
-Remote deletion is **off by default**. Enabling it includes reviewed remote-only keys in the plan. Applying rechecks the local tree and remote snapshots, then creates a transfer batch for new and changed entries. Start that batch in **Transfers**. New keys use create-only conditions and replacements use the reviewed ETag, so changed remote targets fail instead of being overwritten unconditionally. Local source checks also run before upload; keep the source unchanged throughout the run. New sync uploads store an operation identifier and the intended SHA-256 in the `s3browser-upload-token` and `s3browser-sha256` user metadata fields. After an interrupted or ambiguous write, recovery requires that identifier, checksum, size, and a streamed SHA-256 of the remote bytes all match before accepting the upload as completed. Verification needs object read permission and can download the whole object. Older interrupted uploads without this evidence require a fresh comparison; an existing object alone is never treated as proof of success.
+Remote deletion is **off by default**. Enabling it includes reviewed remote-only keys in the plan. Applying rechecks the local tree and remote snapshots, then creates a transfer batch for new and changed entries. Start that batch in **Transfers**. New keys use create-only conditions and replacements use the reviewed ETag, so changed remote targets fail instead of being overwritten unconditionally. Local source checks also run before upload; keep the source unchanged throughout the run. New sync uploads store an operation identifier and the intended SHA-256 in the `objectfilemanager-upload-token` and `objectfilemanager-sha256` user metadata fields. After an interrupted or ambiguous write, recovery requires that identifier, checksum, size, and a streamed SHA-256 of the remote bytes all match before accepting the upload as completed. Verification needs object read permission and can download the whole object. Older interrupted uploads without this evidence require a fresh comparison; an existing object alone is never treated as proof of success.
 
 Reviewed deletions run only after every queued upload succeeds. Before cleanup, the app checks the local tree and deletion targets again, then conditionally deletes matching remote objects. A failed upload prevents cleanup; changed sources or deletion targets stop cleanup. Sync plans and cleanup status survive restarts, and failed cleanup can be retried from **Transfers**. Pause and closing the app interrupt cleanup validation and remote requests, and prevent further deletions from starting. A deletion already accepted by the server may still complete. Resume skips already absent objects and continues with the remaining reviewed keys. Cancel stops the sync permanently; compare again to start a new sync. Sync is not a transaction: completed uploads and deletions are retained after later failures.
 
@@ -145,7 +147,7 @@ HTTPS uses normal certificate validation. Private CAs can be supplied through `N
 - Ordinary upload and download skip modes check destination existence, not content equality. Their replace modes intentionally overwrite matching destinations. Uploading alone does not delete unrelated remote objects; remote deletion is a separate reviewed operation or an explicitly enabled sync option.
 - One transfer batch runs at a time. You can browse or prepare other batches while transferring. The app prevents system idle suspension during an active batch, but cannot prevent shutdowns or all lid-close policies.
 - Saved credentials are encrypted with Electron's OS-backed secure storage. On Linux, insecure `basic_text` storage is rejected. Without an OS keyring, use session-only credentials. After restarting, session-only connections are gone; create a new connection and batch with skip-existing enabled to continue. Locked saved connections become usable after unlocking the keyring and restarting.
-- Queue and sync metadata include local paths and remote keys, stored alongside bookmarks and recent locations in Electron's application data directory (`~/.config/s3-browser` on typical Linux installations). This metadata is not encrypted. Removing a batch only removes local history, not transferred objects or files.
+- Queue and sync metadata include local paths and remote keys, stored alongside bookmarks and recent locations in Electron's application data directory (`~/.config/objectfilemanager` on typical Linux installations). This metadata is not encrypted. Removing a batch only removes local history, not transferred objects or files.
 
 ## Development and verification
 
@@ -159,7 +161,7 @@ npm run dist:portable # Portable Linux tar.gz archive
 npm run pack          # Unpacked desktop application
 ```
 
-Backend integration tests use disposable local MinIO and Azurite services. Install them once; this requires Go and npm, builds MinIO from a pinned upstream commit with Go 1.25.5, and installs Azurite 3.35.0 under `~/.cache/s3browser-test-services` (override with `S3BROWSER_TEST_SERVICE_DIR`), outside the project lockfile:
+Backend integration tests use disposable local MinIO and Azurite services. Install them once; this requires Go and npm, builds MinIO from a pinned upstream commit with Go 1.25.5, and installs Azurite 3.35.0 under `~/.cache/objectfilemanager-test-services` (override with `OBJECTFILEMANAGER_TEST_SERVICE_DIR`), outside the project lockfile:
 
 ```sh
 bash scripts/ci/install-test-services.sh

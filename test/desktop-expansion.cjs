@@ -21,7 +21,7 @@ const {
   if (!process.env.S3_TEST_ENDPOINT)
     throw new Error("Set S3_TEST_ENDPOINT to a disposable S3 test server.");
   const root = await fs.mkdtemp(
-    path.join(os.tmpdir(), "s3browser-expanded-ui-"),
+    path.join(os.tmpdir(), "objectfilemanager-expanded-ui-"),
   );
   const destination = path.join(root, "downloads"),
     source = path.join(root, "sync-source");
@@ -36,8 +36,8 @@ const {
     endpoint: process.env.S3_TEST_ENDPOINT,
     region: "us-east-1",
     pathStyle: true,
-    accessKeyId: "s3browser-test",
-    secretAccessKey: "s3browser-test-secret",
+    accessKeyId: "objectfilemanager-test",
+    secretAccessKey: "objectfilemanager-test-secret",
   });
   const bucket = `desktop-expanded-${Date.now()}`;
   let app,
@@ -124,8 +124,10 @@ const {
     await page.locator("#provider").selectOption("Ceph");
     await page.locator("[name=name]").fill("Expanded test storage");
     await page.locator("#endpoint").fill(process.env.S3_TEST_ENDPOINT);
-    await page.locator("[name=accessKeyId]").fill("s3browser-test");
-    await page.locator("[name=secretAccessKey]").fill("s3browser-test-secret");
+    await page.locator("[name=accessKeyId]").fill("objectfilemanager-test");
+    await page
+      .locator("[name=secretAccessKey]")
+      .fill("objectfilemanager-test-secret");
     await page.locator("#remember").uncheck();
     await page.getByRole("button", { name: "Save connection" }).click();
     await expect(page.locator("#connection-dialog")).not.toBeVisible();

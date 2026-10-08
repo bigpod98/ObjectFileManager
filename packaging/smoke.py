@@ -9,10 +9,10 @@ import time
 import urllib.request
 import websocket
 
-profile = '/tmp/s3browser-package-profile'
+profile = '/tmp/objectfilemanager-package-profile'
 subprocess.run(['install', '-d', '-o', 'tester', '-g', 'tester', profile], check=True)
 xvfb = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1280x900x24', '-ac', '-nolisten', 'tcp'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-log = open('/tmp/s3browser-startup.log', 'w')
+log = open('/tmp/objectfilemanager-startup.log', 'w')
 app = None
 result = None
 try:
@@ -20,8 +20,8 @@ try:
     # Container-only sandbox override: nested Chromium namespaces are blocked by Docker.
     # Installed launchers never include this flag.
     emulation_flags = ['--no-zygote', '--in-process-gpu'] if os.environ.get('S3_EMULATED') == '1' else []
-    executable = os.environ.get('S3_SMOKE_EXECUTABLE', '/usr/bin/objectfilemanager')
-    title = os.environ.get('S3_SMOKE_TITLE', 'ObjectFileManager')
+    executable = '/usr/bin/objectfilemanager'
+    title = 'ObjectFileManager'
     app = subprocess.Popen(['runuser', '-u', 'tester', '--', 'env', 'DISPLAY=:99', executable, '--no-sandbox', '--disable-gpu', '--remote-debugging-port=9222', f'--user-data-dir={profile}'] + emulation_flags, stdout=log, stderr=log, start_new_session=True)
     deadline = time.monotonic() + int(os.environ.get("S3_SMOKE_TIMEOUT", "40"))
     result = None
@@ -63,4 +63,4 @@ finally:
     xvfb.wait(timeout=10)
     log.close()
     if not result:
-        print(pathlib.Path('/tmp/s3browser-startup.log').read_text())
+        print(pathlib.Path('/tmp/objectfilemanager-startup.log').read_text())

@@ -18,7 +18,9 @@ async function fixture(
   t,
   { directory = false, multipart = false, absent = true, retries = 0 } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "s3browser-recovery-"));
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "objectfilemanager-recovery-"),
+  );
   const source = path.join(root, "source");
   const body = directory
     ? Buffer.alloc(0)
@@ -106,8 +108,8 @@ async function fixture(
       assert.equal(persisted.sha256, sha(bytes));
       assert.ok(persisted.attempts > 0);
       assert.deepEqual(Object.keys(metadata).sort(), [
-        "s3browser-sha256",
-        "s3browser-upload-token",
+        "objectfilemanager-sha256",
+        "objectfilemanager-upload-token",
       ]);
       state.object = { body: bytes, metadata, etag: '"uploaded"' };
       state.writes++;
@@ -203,9 +205,10 @@ test("same-size concurrent objects and copied metadata with wrong contents canno
       f.state.readFailures = 1;
       assert.equal((await f.run()).state, "failed");
       if (change === "token")
-        f.state.object.metadata["s3browser-upload-token"] = "another-operation";
+        f.state.object.metadata["objectfilemanager-upload-token"] =
+          "another-operation";
       if (change === "checksum")
-        f.state.object.metadata["s3browser-sha256"] = sha("changed");
+        f.state.object.metadata["objectfilemanager-sha256"] = sha("changed");
       if (change === "content")
         f.state.object.body = Buffer.alloc(f.body.length, 1);
       if (change === "legacy")

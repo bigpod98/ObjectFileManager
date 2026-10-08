@@ -5,8 +5,6 @@
 Name: objectfilemanager
 Version: @VERSION@
 Release: 1
-Obsoletes: s3-browser < 1.0.3
-Provides: s3-browser = %{version}-%{release}
 Summary: Desktop browser and bulk transfer client for object storage
 License: MIT
 Packager: Primož Ajdišek <bigpod@bigpod.si>
@@ -34,13 +32,13 @@ mkdir -p %{buildroot}
 cp -a /input/payload/. %{buildroot}/
 
 %check
-desktop-file-validate %{buildroot}/usr/share/applications/com.tuxbase.s3browser.desktop
+desktop-file-validate %{buildroot}/usr/share/applications/com.tuxbase.objectfilemanager.desktop
 
 %files
 %defattr(-,root,root,-)
 /opt/objectfilemanager
 /usr/bin/objectfilemanager
-/usr/share/applications/com.tuxbase.s3browser.desktop
-/usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png
+/usr/share/applications/com.tuxbase.objectfilemanager.desktop
+/usr/share/icons/hicolor/512x512/apps/com.tuxbase.objectfilemanager.png
 /usr/share/doc/objectfilemanager
 /usr/share/licenses/objectfilemanager

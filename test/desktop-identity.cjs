@@ -13,17 +13,15 @@ const { Queue } = require("../src/queue.cjs");
       const config = path.join(base, "config");
       const profile = custom
         ? path.join(base, "chosen-profile")
-        : path.join(config, "s3-browser");
+        : path.join(config, "objectfilemanager");
       await fs.mkdir(profile, { recursive: true });
       const connection = {
-        id: "legacy-profile",
+        id: "existing-profile",
         name: "Existing connection",
         provider: "Amazon S3",
         region: "us-east-1",
         remember: true,
-        credentials: Buffer.from("unavailable legacy keyring").toString(
-          "base64",
-        ),
+        credentials: Buffer.from("unavailable keyring").toString("base64"),
       };
       const connections = JSON.stringify([connection]);
       await fs.writeFile(path.join(profile, "connections.json"), connections);
@@ -67,7 +65,7 @@ const { Queue } = require("../src/queue.cjs");
           name: app.getName(),
           profile: app.getPath("userData"),
         }));
-        assert.equal(identity.name, "s3-browser");
+        assert.equal(identity.name, "objectfilemanager");
         assert.equal(identity.profile, profile);
         const state = await page.evaluate(async () => ({
           init: await window.s3.init(),
@@ -88,7 +86,7 @@ const { Queue } = require("../src/queue.cjs");
       }
     }
     console.log(
-      "PASS: renamed app retains legacy profiles, locked credentials, bookmarks, queued transfers, and custom profile paths.",
+      "PASS: app uses its own identity and loads saved profiles, locked credentials, bookmarks, queued transfers, and custom profile paths.",
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });

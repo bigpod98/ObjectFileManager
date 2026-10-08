@@ -1,6 +1,6 @@
 # Contributing
 
-Bug reports, fixes, and focused improvements are welcome. Use the [issue tracker](https://github.com/bigpod98/S3Browser/issues) for bugs and proposals, and open pull requests against `main` on [GitHub](https://github.com/bigpod98/S3Browser). Report security vulnerabilities privately to <bigpod@bigpod.si>, not in public issues.
+Bug reports, fixes, and focused improvements are welcome. Use the [issue tracker](https://github.com/bigpod98/ObjectFileManager/issues) for bugs and proposals, and open pull requests against `main` on [GitHub](https://github.com/bigpod98/ObjectFileManager). Report security vulnerabilities privately to <bigpod@bigpod.si>, not in public issues.
 
 ## Development setup
 

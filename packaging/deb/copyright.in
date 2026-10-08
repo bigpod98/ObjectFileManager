@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: ObjectFileManager
 Upstream-Contact: Primož Ajdišek (bigpod) <bigpod@bigpod.si>
-Source: https://github.com/bigpod98/S3Browser
+Source: https://github.com/bigpod98/ObjectFileManager
 
 Files: *
 Copyright: 2026 Primož Ajdišek (bigpod)

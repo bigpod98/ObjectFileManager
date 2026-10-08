@@ -1,12 +1,8 @@
 # Native Linux packages
 
-ObjectFileManager (OFM) replaces S3 Browser beginning with version 1.0.4. The
-package and command are `objectfilemanager`. DEB, RPM, and Arch metadata declare
-replacement of the old package. The desktop ID `com.tuxbase.s3browser`, Electron
-storage/keyring identity `s3-browser`, and existing profile directory stay stable
-so upgrades retain desktop integration, saved connections, and transfer history.
-Remote metadata fields and resumable download filenames also retain their old
-identifiers for compatibility. Repository links still point to `bigpod98/S3Browser`.
+The package and command are `objectfilemanager`. The desktop ID is
+`com.tuxbase.objectfilemanager`, and Electron uses `objectfilemanager` for its
+storage/keyring identity and default profile directory.
 
 Build all three formats from this project's source:
 
@@ -43,8 +39,8 @@ Package versions use the application version plus package release `1`, for examp
 
 - `/opt/objectfilemanager/`: private application and Electron runtime.
 - `/usr/bin/objectfilemanager`: symlink to the executable.
-- `/usr/share/applications/com.tuxbase.s3browser.desktop`: application menu entry.
-- `/usr/share/icons/hicolor/512x512/apps/com.tuxbase.s3browser.png`: application icon.
+- `/usr/share/applications/com.tuxbase.objectfilemanager.desktop`: application menu entry.
+- `/usr/share/icons/hicolor/512x512/apps/com.tuxbase.objectfilemanager.png`: application icon.
 - `/usr/share/doc/objectfilemanager/`: README and the Debian-format `copyright` file.
 - `/usr/share/licenses/objectfilemanager/`: `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSE.electron.txt`, and `LICENSES.chromium.html`, also present in `/opt/objectfilemanager/`.
 
@@ -72,14 +68,6 @@ Runtime dependencies are declared in each native recipe. In particular, GTK, NSS
 npm run test:packages          # All formats
 npm run test:packages -- deb   # One format
 ```
-
-To exercise the rename upgrade, download the matching-architecture 1.0.2 release
-packages into `deb/`, `rpm/`, and `alpm/` subdirectories of a temporary directory,
-verify them against that release's `SHA256SUMS`, then run
-`S3_TEST_UPGRADE_DIR=/path/to/old-packages npm run test:packages -- --x64`
-(or `--arm64`). The test installs and launches the old package first, replaces it
-with ObjectFileManager, checks that the old executable is removed and profile
-files survive, then runs the normal startup and removal checks.
 
 This installs the generated package using the distro package manager in a disposable container, letting it resolve the declared dependencies. It checks native metadata, version ordering, launcher/icon paths, executable library resolution, sandbox permissions, and desktop-file validity. It then starts the installed app as an unprivileged user under Xvfb and queries its real renderer through Chrome DevTools to verify the welcome screen, application version, SQLite initialization, and IPC calls.
 
@@ -130,6 +118,6 @@ git tag -a v0.1.2 -m "Release 0.1.2"
 git push origin v0.1.2
 ```
 
-To retry a release after a workflow-only fix without moving its tag, run `gh workflow run release.yml --repo bigpod98/S3Browser --ref main -f tag=vMAJOR.MINOR.PATCH`. This uses the workflow from `main` while building and testing source from the existing tag.
+To retry a release after a workflow-only fix without moving its tag, run `gh workflow run release.yml --repo bigpod98/ObjectFileManager --ref main -f tag=vMAJOR.MINOR.PATCH`. This uses the workflow from `main` while building and testing source from the existing tag.
 
-Use the actual next version, and configure `origin` for `https://github.com/bigpod98/S3Browser.git` before pushing. There is no workflow that also publishes on release events, avoiding duplicate uploads. Windows/macOS installers and architectures other than Linux x86_64 and ARM64 are outside this workflow.
+Use the actual next version, and configure `origin` for `https://github.com/bigpod98/ObjectFileManager.git` before pushing. There is no workflow that also publishes on release events, avoiding duplicate uploads. Windows/macOS installers and architectures other than Linux x86_64 and ARM64 are outside this workflow.
