@@ -25,6 +25,7 @@
     "test:desktop": "node test/desktop.cjs",
     "test:desktop:identity": "node test/desktop-identity.cjs",
     "test:desktop:providers": "node test/desktop-providers.cjs",
+    "test:desktop:navigation": "node test/desktop-navigation.cjs",
     "test:scale": "node test/scale.cjs",
     "format": "prettier --write src test scripts package.json README.md CONTRIBUTING.md docs packaging/README.md .github/workflows",
     "check": "prettier --check src test scripts package.json README.md CONTRIBUTING.md docs packaging/README.md .github/workflows",

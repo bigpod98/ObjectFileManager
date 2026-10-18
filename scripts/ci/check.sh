@@ -10,6 +10,7 @@ npx playwright install --with-deps chromium
 npm run check
 AZURITE_INTEGRATION=1 npm test
 npm run test:desktop:providers
+npm run test:desktop:navigation
 # Only the disposable root-run CI container disables Chromium's sandbox.
 export S3_TEST_NO_SANDBOX=1
 xvfb-run -a npm run test:desktop:identity

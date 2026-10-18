@@ -7,9 +7,18 @@ apt-get install -y --no-install-recommends \
 if [[ ${1:-} == packages ]]; then
   # Use a current client for the runner's Docker daemon. Bookworm's docker.io
   # client only supports API 1.41, which newer daemons reject.
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o "$work/docker.asc"
+  # Pin the exact upstream key (primary fingerprint
+  # 9DC858229FC7DD38854AE2D88D81803C0EBFCD88) before making apt trust it.
+  # A key rotation or even a re-export requires reviewing this checksum.
+  if ! echo "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570  $work/docker.asc" | sha256sum --check --status; then
+    echo 'Docker signing key checksum mismatch; refusing to install apt trust.' >&2
+    exit 1
+  fi
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
+  install -m 0644 "$work/docker.asc" /etc/apt/keyrings/docker.asc
   source /etc/os-release
   cat > /etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb

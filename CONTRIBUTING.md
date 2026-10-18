@@ -19,6 +19,7 @@ If your npm configuration blocks Electron's install script, run `node node_modul
 npm run check                     # Prettier formatting
 npm test                          # Unit tests; service-backed tests skip without endpoints
 npm run test:desktop:providers    # Provider form smoke; headless Chromium
+npm run test:desktop:navigation   # Navigation races and search; headless Chromium
 ```
 
 Changes to storage, transfer, sync, or provider behavior should also pass the integration suites against disposable local services. Install the services once (requires Go and npm; nothing is added to the project lockfile), then run commands through the helper, which starts fresh loopback MinIO and Azurite instances and removes them afterwards:

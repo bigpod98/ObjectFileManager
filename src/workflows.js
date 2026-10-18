@@ -139,10 +139,20 @@ $("#recursive-search").onclick = act(async () => {
 });
 $("#clear-search").onclick = act(() => navigate(state.prefix));
 async function loadLocations() {
-  state.locations = await api["locations:get"]();
+  await updateLocations("locations:get");
+}
+async function updateLocations(method, ...args) {
+  const request = ++state.locationsRequest;
+  const locations = await api[method](...args);
+  if (request !== state.locationsRequest) return;
+  state.locations = locations;
   renderLocations();
 }
 function renderLocations() {
+  for (const key of ["bookmarks", "recent"])
+    state.locations[key] = (state.locations[key] || []).filter((l) =>
+      state.profiles.some((p) => p.id === l.profile),
+    );
   const rows = [
     ...(state.locations.bookmarks || []).map((l) => ({ ...l, saved: true })),
     ...(state.locations.recent || []).slice(0, 6),
@@ -163,9 +173,8 @@ function renderLocations() {
         return;
       }
       if (state.profile?.id !== loc.profile)
-        await selectConnection(loc.profile);
-      await openBucket(loc.bucket);
-      if (loc.prefix) await navigate(loc.prefix);
+        await selectConnection(loc.profile, loc);
+      else await openBucket(loc.bucket, loc.prefix);
     });
   const ctx = locationContext();
   $("#bookmark").textContent = (state.locations.bookmarks || []).some(
@@ -177,14 +186,12 @@ function renderLocations() {
     ? "★ Bookmarked"
     : "☆ Bookmark";
 }
-async function visitLocation() {
-  state.locations = await api["locations:visit"](locationContext());
-  renderLocations();
+async function visitLocation(ctx) {
+  await updateLocations("locations:visit", ctx);
 }
 $("#bookmark").onclick = act(async () => {
   if (!requireLocation()) return;
-  state.locations = await api["locations:bookmark"](locationContext());
-  renderLocations();
+  await updateLocations("locations:bookmark", locationContext());
 });
 async function download(key) {
   return queueDownloads([{ key, folder: false }]);

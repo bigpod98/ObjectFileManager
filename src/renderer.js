@@ -9,6 +9,8 @@ const state = {
   page: 0,
   listing: null,
   request: 0,
+  navigation: 0,
+  locationsRequest: 0,
   jobs: [],
   view: "browser",
   busy: false,
@@ -73,7 +75,8 @@ function storageNoun(provider = state.profile?.provider) {
     ? "container"
     : "bucket";
 }
-async function selectConnection(id) {
+async function selectConnection(id, location = null) {
+  state.navigation++;
   state.selection.clear();
   state.searchQuery = null;
   state.profile = state.profiles.find((p) => p.id === id);
@@ -110,17 +113,20 @@ async function selectConnection(id) {
   $("#open-bucket").textContent = `Open ${noun} →`;
   $("#bucket-select").innerHTML = `<option value="">Select a ${noun}</option>`;
   $("#direct-bucket").value = state.profile.bucket || "";
+  $("#list-buckets").disabled = false;
   renderFiles();
-  if (state.profile.bucket) await openBucket(state.profile.bucket);
+  if (location) await openBucket(location.bucket, location.prefix);
+  else if (state.profile.bucket) await openBucket(state.profile.bucket);
   else await listBuckets();
 }
 async function listBuckets() {
   if (!state.profile) return;
   const id = state.profile.id;
+  const navigation = state.navigation;
   $("#list-buckets").disabled = true;
   try {
     const buckets = await api.buckets(id);
-    if (state.profile?.id !== id) return;
+    if (navigation !== state.navigation) return;
     $("#bucket-select").innerHTML =
       `<option value="">Select a ${storageNoun()}</option>` +
       buckets
@@ -131,14 +137,14 @@ async function listBuckets() {
       $("#browser-status").textContent =
         `No ${storageNoun()}s returned. You can also open a ${storageNoun()} by name.`;
   } catch (e) {
-    if (state.profile?.id === id)
+    if (navigation === state.navigation)
       $("#browser-status").textContent =
         `Could not list ${storageNoun()}s: ${e.message}. Enter a ${storageNoun()} name to open it directly.`;
   } finally {
     $("#list-buckets").disabled = false;
   }
 }
-async function openBucket(bucket) {
+async function openBucket(bucket, prefix = "") {
   if (!bucket.trim()) return;
   state.bucket = bucket.trim();
   if (![...$("#bucket-select").options].some((o) => o.value === state.bucket)) {
@@ -146,9 +152,10 @@ async function openBucket(bucket) {
   }
   $("#direct-bucket").value = state.bucket;
   $("#bucket-select").value = state.bucket;
-  await navigate("");
+  await navigate(prefix);
 }
 async function navigate(prefix) {
+  const navigation = ++state.navigation;
   state.prefix = prefix;
   state.searchQuery = null;
   state.selection.clear();
@@ -156,8 +163,9 @@ async function navigate(prefix) {
   state.page = 0;
   state.tokens = [null];
   $("#search").value = "";
-  await loadFiles();
-  if (state.profile && state.bucket) await visitLocation();
+  const ctx = locationContext();
+  if ((await loadFiles()) && navigation === state.navigation)
+    await visitLocation(ctx);
 }
 async function loadFiles() {
   if (!state.profile || !state.bucket) return;
@@ -183,6 +191,7 @@ async function loadFiles() {
     if (request !== state.request) return;
     state.listing = listing;
     renderFiles();
+    return true;
   } catch (e) {
     if (request === state.request) {
       renderFiles();
@@ -209,12 +218,13 @@ function renderFiles() {
   for (const b of $("#breadcrumbs").querySelectorAll("button"))
     b.onclick = act(() => navigate(crumbs[+b.dataset.index].prefix));
   const filter = $("#search").value.toLowerCase();
+  const folders = new Set(state.listing?.folders || []);
   const rows = state.listing
     ? [
-        ...state.listing.folders.map((key) => ({ key, folder: true })),
+        ...[...folders].map((key) => ({ key, folder: true })),
         ...state.listing.objects
-          .filter((o) => !o.key.endsWith("/"))
-          .map((o) => ({ ...o, folder: false })),
+          .filter((o) => o.key !== state.prefix && !folders.has(o.key))
+          .map((o) => ({ ...o, folder: o.key.endsWith("/") })),
       ].filter((o) =>
         o.key.slice(state.prefix.length).toLowerCase().includes(filter),
       )
@@ -604,14 +614,26 @@ $("#swift-token-form").onsubmit = async (event) => {
 };
 $("#forget").onclick = act(async () => {
   if (!confirm(`Remove ${state.profile.name} from this device?`)) return;
-  state.profiles = await api["connection:remove"](state.profile.id);
-  state.profile = null;
-  state.bucket = "";
-  state.request++;
+  const id = state.profile.id;
+  state.profiles = await api["connection:remove"](id);
+  // Invalidate snapshots requested before removal, including bookmark/visit replies.
+  state.locationsRequest++;
+  if (state.profile?.id === id) {
+    state.profile = null;
+    state.bucket = "";
+    state.prefix = "";
+    state.listing = null;
+    state.selection.clear();
+    state.navigation++;
+    state.request++;
+    $("#browser").hidden = true;
+    $("#welcome").hidden = false;
+    $("#workspace-name").textContent = "Overview";
+  }
   renderConnections();
-  $("#browser").hidden = true;
-  $("#welcome").hidden = false;
-  $("#workspace-name").textContent = "Overview";
+  // Remove unavailable entries immediately, even if reloading locations fails.
+  renderLocations();
+  await loadLocations();
 });
 $("#bucket-form").onsubmit = act(async (e) => {
   e.preventDefault();
