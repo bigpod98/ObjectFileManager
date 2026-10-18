@@ -148,7 +148,7 @@ test("location schemas recover valid entries and reject malformed IPC input", ()
     assert.throws(() => local.cleanLocation(bad), /saved location/);
 });
 
-async function mainFixture(t, initial = [stored("swift")]) {
+async function mainFixture(t, initial = [stored("swift")], injected = {}) {
   const dir = await directory(t);
   await fs.writeFile(
     path.join(dir, "connections.json"),
@@ -188,6 +188,7 @@ async function mainFixture(t, initial = [stored("swift")]) {
     },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     dialog: { showErrorBox: (...args) => errors.push(args) },
+    clipboard: injected.clipboard,
     safeStorage,
     BrowserWindow: class {
       constructor() {
@@ -221,7 +222,7 @@ async function mainFixture(t, initial = [stored("swift")]) {
     "./storage.cjs": { client: () => ({ destroy() {} }) },
     "./downloads.cjs": {},
     "./operations.cjs": {},
-    "./object-tools.cjs": {},
+    "./object-tools.cjs": injected.objectTools || {},
   };
   vm.runInNewContext(await fs.readFile(path.resolve("src/main.cjs"), "utf8"), {
     require: (name) =>
@@ -258,6 +259,33 @@ async function mainFixture(t, initial = [stored("swift")]) {
     },
   };
 }
+test("main waits for clipboard writes and returns asynchronous failures over IPC", async (t) => {
+  const url = "https://storage.example/download";
+  let rejectWrite;
+  const write = new Promise((resolve, reject) => {
+    rejectWrite = reject;
+  });
+  const app = await mainFixture(t, undefined, {
+    clipboard: { writeText: () => write },
+    objectTools: { signedUrl: async () => url },
+  });
+  assert.deepEqual(await app.call("objects:url", { profile: "swift" }), {
+    ok: true,
+    value: url,
+  });
+  let replied = false;
+  const copying = app.call("objects:copy-url", { url }).then((reply) => {
+    replied = true;
+    return reply;
+  });
+  await new Promise(setImmediate);
+  assert.equal(replied, false);
+  rejectWrite(new Error("Clipboard unavailable"));
+  assert.deepEqual(await copying, {
+    ok: false,
+    error: "Clipboard unavailable",
+  });
+});
 const add = (name) => ({
   name,
   provider: "Amazon S3",

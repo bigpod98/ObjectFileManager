@@ -349,10 +349,10 @@ else
       generatedUrls.add(url);
       return url;
     });
-    handle("objects:copy-url", ({ url }) => {
+    handle("objects:copy-url", async ({ url }) => {
       if (!generatedUrls.has(url))
         throw new Error("Generate a download link before copying it.");
-      clipboard.writeText(url);
+      await clipboard.writeText(url);
       return true;
     });
     const objectMethods = {

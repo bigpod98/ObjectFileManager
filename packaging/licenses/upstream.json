@@ -1,21 +1,21 @@
 {
-  "@aws-sdk/credential-provider-http@3.972.73": {
-    "file": "aws-sdk-js-v3-3.1136.0.txt",
-    "source": "https://github.com/aws/aws-sdk-js-v3/blob/d6b94db8f4a00cc452dbe0aacb247e8ece3897ea/LICENSE",
+  "@aws-sdk/credential-provider-http@3.972.76": {
+    "file": "aws-sdk-js-v3-3.1152.0.txt",
+    "source": "https://github.com/aws/aws-sdk-js-v3/blob/3ce8aa778c22193dad5f7fcefe239e3a74a3cd4f/LICENSE",
     "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
-    "note": "Repository LICENSE at tag v3.1136.0, whose packages-internal/credential-provider-http is this version. The package directory has no license file; the repository has no NOTICE file."
+    "note": "Repository LICENSE at tag v3.1152.0, whose packages-internal/credential-provider-http is this version. The package directory has no license file; the repository has no NOTICE file."
   },
-  "@aws-sdk/credential-provider-login@3.972.78": {
-    "file": "aws-sdk-js-v3-3.1136.0.txt",
-    "source": "https://github.com/aws/aws-sdk-js-v3/blob/d6b94db8f4a00cc452dbe0aacb247e8ece3897ea/LICENSE",
+  "@aws-sdk/credential-provider-login@3.972.81": {
+    "file": "aws-sdk-js-v3-3.1152.0.txt",
+    "source": "https://github.com/aws/aws-sdk-js-v3/blob/3ce8aa778c22193dad5f7fcefe239e3a74a3cd4f/LICENSE",
     "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
-    "note": "Repository LICENSE at tag v3.1136.0, whose packages-internal/credential-provider-login is this version. The package directory has no license file; the repository has no NOTICE file."
+    "note": "Repository LICENSE at tag v3.1152.0, whose packages-internal/credential-provider-login is this version. The package directory has no license file; the repository has no NOTICE file."
   },
-  "@aws-sdk/nested-clients@3.997.45": {
-    "file": "aws-sdk-js-v3-3.1136.0.txt",
-    "source": "https://github.com/aws/aws-sdk-js-v3/blob/d6b94db8f4a00cc452dbe0aacb247e8ece3897ea/LICENSE",
+  "@aws-sdk/nested-clients@3.997.48": {
+    "file": "aws-sdk-js-v3-3.1152.0.txt",
+    "source": "https://github.com/aws/aws-sdk-js-v3/blob/3ce8aa778c22193dad5f7fcefe239e3a74a3cd4f/LICENSE",
     "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
-    "note": "Repository LICENSE at tag v3.1136.0, whose packages-internal/nested-clients is this version. The package directory has no license file; the repository has no NOTICE file."
+    "note": "Repository LICENSE at tag v3.1152.0, whose packages-internal/nested-clients is this version. The package directory has no license file; the repository has no NOTICE file."
   },
   "@nodable/entities@3.1.0": {
     "file": "nodable-entities-3.1.0.txt",
@@ -34,11 +34,5 @@
     "source": "https://github.com/stephenplusplus/stubs/blob/9f93d33b800f61a2c00f1582dc0f8cc14242219a/LICENSE",
     "sha256": "cd01ce0baa2b903bb80911719424904a4a0eb589acb982d45b119dffe28b7f58",
     "note": "Upstream added this LICENSE (unchanged since) after publishing 3.0.0 from commit 2d41d3ae487d3bb0b8c7511d254783eaad862d8f; package.json declares MIT."
-  },
-  "tr46@0.0.3": {
-    "file": "tr46-0.0.3.txt",
-    "source": "https://github.com/jsdom/tr46/blob/3a6f29721e7063b9ffd421e461a54beae6170001/LICENSE.md",
-    "sha256": "eeed1ca176eebad5c73870e233cfff03981fecd319c969475dfa3633036c336b",
-    "note": "First upstream LICENSE.md, added after publishing 0.0.3 from commit a8009f9ce80ff5dbe71dd71e203afe4e4c878d28; package.json declares MIT."
   }
 }
