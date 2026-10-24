@@ -188,8 +188,11 @@ function client(profile) {
         typeof file.metadata.crc32c !== "string" ||
         file.metadata.crc32c !== checksum.toString()
       )
-        throw new Error(
-          "Google Cloud Storage upload checksum is missing or does not match. The object was not deleted; review it before retrying.",
+        throw Object.assign(
+          new Error(
+            "Google Cloud Storage upload checksum is missing or does not match. The object was not deleted; review it before retrying.",
+          ),
+          { code: "UploadIntegrityError" },
         );
       return { ETag: etag(file.metadata), VersionId: file.metadata.generation };
     } catch (error) {

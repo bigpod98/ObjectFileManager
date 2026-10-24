@@ -217,7 +217,10 @@ function renderFiles() {
     .join("");
   for (const b of $("#breadcrumbs").querySelectorAll("button"))
     b.onclick = act(() => navigate(crumbs[+b.dataset.index].prefix));
-  const filter = $("#search").value.toLowerCase();
+  const input = $("#search").value;
+  const filter = (
+    state.searchQuery !== null ? input.trim() : input
+  ).toLowerCase();
   const folders = new Set(state.listing?.folders || []);
   const rows = state.listing
     ? [
@@ -323,7 +326,7 @@ async function refreshJobs() {
   // Keep existing buttons stable while polling so keyboard focus and clicks are preserved.
   for (const old of [...$("#jobs").children])
     if (!state.jobs.some((j) => `job-${j.id}` === old.id)) old.remove();
-  for (const j of state.jobs) {
+  for (const [index, j] of state.jobs.entries()) {
     let el = document.getElementById(`job-${j.id}`);
     const profile = state.profiles.find((p) => p.id === j.profile);
     if (!el) {
@@ -369,6 +372,21 @@ async function refreshJobs() {
             b.disabled = false;
           }
         });
+    }
+    // Reconcile the full order: prepending each new card reverses batches.
+    // Avoid moving unchanged cards, and preserve focus when an older browser
+    // requires the remove/reinsert semantics of insertBefore.
+    const jobs = $("#jobs");
+    const before = jobs.children[index];
+    if (before !== el) {
+      if (typeof jobs.moveBefore === "function") jobs.moveBefore(el, before);
+      else {
+        const focused = el.contains(document.activeElement)
+          ? document.activeElement
+          : null;
+        jobs.insertBefore(el, before);
+        focused?.focus({ preventScroll: true });
+      }
     }
     el.querySelector("h3").textContent = `${j.bucket}/${j.prefix}`;
     el.querySelector(".connection-orb").textContent =

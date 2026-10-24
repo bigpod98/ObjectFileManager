@@ -35,7 +35,25 @@ function client(profile) {
     requestHandler: { connectionTimeout: 15000, requestTimeout: 120000 },
   });
 }
-async function browse(s3, bucket, prefix, token) {
+async function buckets(s3) {
+  const names = [];
+  const seen = new Set();
+  let token;
+  do {
+    const page = await s3.send(
+      new ListBucketsCommand({ MaxBuckets: 1000, ContinuationToken: token }),
+    );
+    names.push(...(page.Buckets || []).map((bucket) => bucket.Name));
+    token = page.ContinuationToken;
+    if (token != null && token !== "") {
+      if (typeof token !== "string" || seen.has(token))
+        throw new Error("Storage returned invalid bucket pagination.");
+      seen.add(token);
+    }
+  } while (token);
+  return names;
+}
+async function browse(s3, bucket, prefix = "", token) {
   const r = await s3.send(
     new ListObjectsV2Command({
       Bucket: bucket,
@@ -45,6 +63,15 @@ async function browse(s3, bucket, prefix, token) {
       MaxKeys: 500,
     }),
   );
+  for (const key of [
+    ...(r.Contents || []).map((object) => object.Key),
+    ...(r.CommonPrefixes || []).map((folder) => folder.Prefix),
+  ]) {
+    if (typeof key !== "string" || !key || !key.startsWith(prefix))
+      throw new Error(
+        "Storage returned an object outside the requested folder.",
+      );
+  }
   return {
     folders: (r.CommonPrefixes || []).map((p) => p.Prefix),
     objects: (r.Contents || [])
@@ -60,6 +87,7 @@ async function browse(s3, bucket, prefix, token) {
 }
 // Metadata identifies this durable queue operation, while hashing the returned
 // body proves that copied metadata or a concurrent write did not change bytes.
+// Undefined means absent; false means present but not verified.
 async function reconcileUpload(s3, job, entry, signal) {
   let result;
   try {
@@ -69,7 +97,7 @@ async function reconcileUpload(s3, job, entry, signal) {
     );
   } catch (error) {
     if (error.$metadata?.httpStatusCode === 404 || error.name === "NoSuchKey")
-      return false;
+      return undefined;
     throw error;
   }
   try {
@@ -99,6 +127,19 @@ async function reconcileUpload(s3, job, entry, signal) {
   }
 }
 async function transfer(s3, job, entry, signal, onProgress) {
+  if (entry.integrityPending) {
+    const verified =
+      entry.uploadToken && entry.sha256
+        ? await reconcileUpload(s3, job, entry, signal)
+        : false;
+    if (verified === true) return;
+    if (verified !== undefined)
+      throw new Error(
+        "The previous upload has not passed integrity verification. The remote object was left unchanged; review it before retrying.",
+      );
+    // A missing object can be retried. Existence alone must never be accepted
+    // as success if another object appears between this read and the write.
+  }
   const recoverable = !!(
     (entry.expectedAbsent || entry.etag) &&
     entry.uploadToken &&
@@ -126,6 +167,7 @@ async function transfer(s3, job, entry, signal, onProgress) {
   }
 }
 async function uploadObject(s3, job, entry, signal, onProgress) {
+  const recoveringIntegrity = !!entry.integrityPending;
   if (entry.etag)
     require("./provider-capabilities.cjs").requireCapability(
       s3,
@@ -139,6 +181,10 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
         new HeadObjectCommand({ Bucket: job.bucket, Key: entry.key }),
         { abortSignal: signal },
       );
+      if (recoveringIntegrity)
+        throw new Error(
+          "The previous upload has not passed integrity verification.",
+        );
       return "skipped";
     } catch (e) {
       if (e.$metadata?.httpStatusCode !== 404 && e.name !== "NotFound") throw e;
@@ -160,12 +206,18 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
           },
         }
       : {};
+  const markIntegrityPending = () => {
+    if (s3.provider !== "Google Cloud Storage") return;
+    entry.markIntegrityPending?.();
+    entry.integrityPending = 1;
+  };
   if (entry.directory) {
     await validateUploadSource(entry);
     if (entry.sha256 && entry.sha256 !== createHash("sha256").digest("base64"))
       throw new Error(
         "Source content changed since scanning. Create a new batch.",
       );
+    markIntegrityPending();
     await s3.send(
       new PutObjectCommand({
         Bucket: job.bucket,
@@ -224,6 +276,7 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
       signal.addEventListener("abort", abort, { once: true });
       try {
         signal.throwIfAborted();
+        markIntegrityPending();
         await s3.upload(
           {
             Bucket: job.bucket,
@@ -237,7 +290,11 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
           { abortSignal: signal, onProgress: onProgress || (() => {}) },
         );
       } catch (error) {
-        if (skipExisting && error.$metadata?.httpStatusCode === 412)
+        if (
+          skipExisting &&
+          !recoveringIntegrity &&
+          error.$metadata?.httpStatusCode === 412
+        )
           return "skipped";
         throw error;
       } finally {
@@ -294,4 +351,4 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
     await handle.close();
   }
 }
-module.exports = { client, browse, transfer, ListBucketsCommand };
+module.exports = { client, buckets, browse, transfer, ListBucketsCommand };

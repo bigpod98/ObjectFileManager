@@ -81,6 +81,189 @@ async function checkDestination(file, directory) {
   return stat;
 }
 
+const sameFile = (a, b) =>
+  a &&
+  b &&
+  a.dev === b.dev &&
+  a.ino === b.ino &&
+  a.birthtimeMs === b.birthtimeMs;
+
+function publicationMarker(destination) {
+  // Identify the local destination, independently of remote key/prefix or batch.
+  const hash = createHash("sha256")
+    .update(destination.normalize("NFC").toLowerCase())
+    .digest("hex")
+    .slice(0, 32);
+  return path.join(
+    path.dirname(destination),
+    `.objectfilemanager-${hash}.publish`,
+  );
+}
+
+async function digestFile(filename, signal) {
+  const before = await checkDestination(filename, false);
+  const handle = await fs.open(
+    filename,
+    constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+  );
+  try {
+    if (!sameFile(before, await handle.stat()))
+      throw new Error("Download file changed while verifying it.");
+    const hash = createHash("sha256");
+    for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      signal.throwIfAborted();
+      hash.update(chunk);
+    }
+    const after = await checkDestination(filename, false);
+    if (
+      !sameFile(before, after) ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs
+    )
+      throw new Error("Download file changed while verifying it.");
+    return hash.digest("hex");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function recoverPublication(destination, existing, job, entry, signal) {
+  const marker = publicationMarker(destination);
+  if (!(await statIfExists(marker))) return false;
+  await checkDestination(marker, false);
+  const handle = await fs.open(
+    marker,
+    constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+  );
+  let record;
+  try {
+    if ((await handle.stat()).size > 16384)
+      throw new Error("Invalid download publication record.");
+    record = JSON.parse(await handle.readFile("utf8"));
+  } catch {
+    throw new Error(
+      `Unfinished download publication; move or remove ${destination} and ${marker} before retrying.`,
+    );
+  } finally {
+    await handle.close();
+  }
+  if (!existing) {
+    await fs.unlink(marker);
+    return false;
+  }
+  if (
+    record.destination === destination &&
+    record.profile === job.profile &&
+    record.bucket === job.bucket &&
+    record.key === entry.key &&
+    record.etag === entry.etag &&
+    record.size === entry.size &&
+    existing.size === entry.size &&
+    typeof record.sha256 === "string" &&
+    (await digestFile(destination, signal)) === record.sha256
+  ) {
+    signal.throwIfAborted();
+    await fs.unlink(marker);
+    return true;
+  }
+  // A crash may have happened between exclusive creation and recording its
+  // identity. Never delete an ambiguous file or accept a partial copy as a skip.
+  throw new Error(
+    `Unfinished download publication; move or remove ${destination} and ${marker} before retrying.`,
+  );
+}
+
+async function publishWithoutLinks(temporary, destination, job, entry, signal) {
+  const marker = publicationMarker(destination);
+  const sha256 = await digestFile(temporary, signal);
+  let record, source, target, owned;
+  let ownsMarker = false;
+  try {
+    signal.throwIfAborted();
+    record = await fs.open(marker, "wx", 0o600);
+    ownsMarker = true;
+    await record.writeFile(
+      JSON.stringify({
+        destination,
+        profile: job.profile,
+        bucket: job.bucket,
+        key: entry.key,
+        etag: entry.etag,
+        size: entry.size,
+        sha256,
+      }),
+    );
+    await record.sync();
+    await record.close();
+    record = null;
+    await checkDestination(destination, false);
+    signal.throwIfAborted();
+    try {
+      target = await fs.open(
+        destination,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          (constants.O_NOFOLLOW || 0),
+        0o600,
+      );
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      await checkDestination(destination, false);
+      return "skipped";
+    }
+    owned = await target.stat();
+    const sourceStat = await checkDestination(temporary, false);
+    source = await fs.open(
+      temporary,
+      constants.O_RDONLY | (constants.O_NOFOLLOW || 0),
+    );
+    if (
+      !sameFile(sourceStat, await source.stat()) ||
+      sourceStat.size !== entry.size
+    )
+      throw new Error("Download temporary file changed during publication.");
+    const buffer = Buffer.alloc(1024 * 1024);
+    let copied = 0;
+    while (true) {
+      signal.throwIfAborted();
+      const { bytesRead } = await source.read(buffer);
+      if (!bytesRead) break;
+      copied += bytesRead;
+      if (copied > entry.size)
+        throw new Error("Download temporary file changed during publication.");
+      await target.writeFile(buffer.subarray(0, bytesRead));
+    }
+    if (copied !== entry.size)
+      throw new Error("Download temporary file changed during publication.");
+    signal.throwIfAborted();
+    await target.sync();
+    await target.close();
+    target = null;
+    if (!sameFile(owned, await checkDestination(destination, false)))
+      throw new Error("Download destination changed during publication.");
+    if ((await digestFile(destination, signal)) !== sha256)
+      throw new Error("Download changed during publication.");
+    owned = null;
+    return "done";
+  } finally {
+    await record?.close();
+    await source?.close();
+    await target?.close();
+    if (target && !owned)
+      throw new Error(
+        "Unable to verify download destination ownership; publication record retained.",
+      );
+    if (owned) {
+      // Do not remove a replacement created by another process.
+      if (sameFile(owned, await checkDestination(destination, false)))
+        await fs.unlink(destination);
+    }
+    if (ownsMarker) await fs.unlink(marker);
+  }
+}
+
 async function plan(s3, { bucket, prefix = "", selection, destination }) {
   if (!bucket || !Array.isArray(selection) || !selection.length || !destination)
     throw new Error("Choose objects and a destination folder.");
@@ -205,7 +388,14 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     await directories(destination, true);
     return "done";
   }
-  if (existing && !job.overwrite) return "skipped";
+  const recovered = await recoverPublication(
+    destination,
+    existing,
+    job,
+    entry,
+    signal,
+  );
+  if (existing && !job.overwrite && !recovered) return "skipped";
   if (!entry.etag)
     throw new Error(
       "Download has no source ETag. Create a new download batch.",
@@ -225,6 +415,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
       throw new Error("Unsafe download temporary file.");
     await fs.unlink(temporary);
   }
+  if (recovered) return "done";
   let file, body;
   let ownedTemporary = false;
   const abort = () => body?.destroy?.();
@@ -279,6 +470,18 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
       try {
         await fs.link(temporary, destination);
       } catch (error) {
+        if (
+          ["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV"].includes(
+            error.code,
+          )
+        )
+          return await publishWithoutLinks(
+            temporary,
+            destination,
+            job,
+            entry,
+            signal,
+          );
         if (error.code !== "EEXIST") throw error;
         await checkDestination(destination, false);
         return "skipped";

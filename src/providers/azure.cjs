@@ -192,7 +192,7 @@ function client(profile, injected = {}) {
     );
     if (!Number.isSafeInteger(blockSize) || blockSize > 128 * 1024 * 1024)
       throw unsupported(
-        "streamed upload exceeds the supported 128 MiB per block limit.",
+        "streamed upload exceeds this client's 6,710,886,400,000-byte (~6.104 TiB) limit (50,000 blocks of at most 128 MiB).",
       );
     const prefix = randomUUID();
     const ids = [];

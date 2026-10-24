@@ -257,13 +257,7 @@ else
       clients.delete(id);
       return publicProfiles();
     });
-    handle(
-      "buckets",
-      async (id) =>
-        (
-          await getClient(id).send(new storage.ListBucketsCommand({}))
-        ).Buckets?.map((b) => b.Name) || [],
-    );
+    handle("buckets", (id) => storage.buckets(getClient(id)));
     handle("browse", (id, bucket, prefix, token) =>
       storage.browse(getClient(id), bucket, prefix, token),
     );

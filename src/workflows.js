@@ -329,10 +329,13 @@ $("#sync-open").onclick = () => {
     if (!result) return;
     const { token, plan } = result;
     const uploads = plan.entries || [],
-      deletions = plan.deletions || [];
+      deletions = plan.deletions || [],
+      conflicts = (plan.rows || []).filter(
+        (row) => row.status === "conflict",
+      ).length;
     workflow(
       "Review folder sync",
-      `<p class="destination">${esc(plan.source)} → ${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${uploads.length} uploads · ${deletions.length} remote deletions</p><div class="review-list">${(plan.rows || []).map((row) => `<div class="detail-row"><b>${esc(row.key)}</b><small>${esc(row.status)} · ${esc(row.reason || "")}</small></div>`).join("")}</div>${deletions.length ? '<p class="warning">The remote deletions shown above are included in this sync.</p>' : ""}<div class="modal-footer"><button id="sync-apply" class="primary" ${uploads.length || deletions.length ? "" : "disabled"}>Confirm & queue sync</button></div>`,
+      `<p class="destination">${esc(plan.source)} → ${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${uploads.length} uploads · ${deletions.length} remote deletions</p>${conflicts ? `<p class="warning" role="status">${conflicts} unresolved ${conflicts === 1 ? "conflict" : "conflicts"}. Conflicting paths will remain unchanged. Only the non-conflicting changes below will be queued.</p>` : ""}<div class="review-list">${(plan.rows || []).map((row) => `<div class="detail-row"><b>${esc(row.key)}</b><small>${esc(row.status)} · ${esc(row.reason || "")}</small></div>`).join("")}</div>${deletions.length ? '<p class="warning">The remote deletions shown above are included in this sync.</p>' : ""}<div class="modal-footer"><button id="sync-apply" class="primary" ${uploads.length || deletions.length ? "" : "disabled"}>${conflicts ? "Queue non-conflicting changes" : "Confirm & queue sync"}</button></div>`,
     );
     if (!supports("conditionalWrite") && uploads.some((entry) => entry.etag)) {
       $("#sync-apply").disabled = true;
