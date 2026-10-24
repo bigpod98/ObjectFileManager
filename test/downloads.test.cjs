@@ -332,3 +332,218 @@ test("missing list ETag is resolved with HEAD; missing source snapshots fail", a
     /ETag/,
   );
 });
+
+const downloadable = () => ({
+  send: async () => ({ Body: Readable.from([Buffer.from("hello")]) }),
+});
+
+test("unsupported hard links fall back to exclusive verified publication", async (t) => {
+  for (const code of ["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV"]) {
+    await t.test(code, async (t) => {
+      const root = await fixture(t);
+      t.mock.method(fs, "link", async () => {
+        throw Object.assign(new Error("Unsupported"), { code });
+      });
+      assert.equal(
+        await transfer(downloadable(), { bucket: "b" }, item(root), signal()),
+        "done",
+      );
+      assert.equal(
+        await fs.readFile(path.join(root, "file.txt"), "utf8"),
+        "hello",
+      );
+      assert.deepEqual(await fs.readdir(root), ["file.txt"]);
+    });
+  }
+});
+
+test("fallback does not replace a concurrently created destination", async (t) => {
+  const root = await fixture(t);
+  t.mock.method(fs, "link", async () => {
+    await fs.writeFile(path.join(root, "file.txt"), "concurrent");
+    throw Object.assign(new Error("Unsupported"), { code: "ENOTSUP" });
+  });
+  assert.equal(
+    await transfer(downloadable(), { bucket: "b" }, item(root), signal()),
+    "skipped",
+  );
+  assert.equal(
+    await fs.readFile(path.join(root, "file.txt"), "utf8"),
+    "concurrent",
+  );
+  assert.deepEqual(await fs.readdir(root), ["file.txt"]);
+});
+
+test("fallback cancellation and write failure remove owned partial destinations", async (t) => {
+  for (const mode of ["cancel", "failure", "replacement"]) {
+    await t.test(mode, async (t) => {
+      const root = await fixture(t);
+      const destination = path.join(root, "file.txt");
+      const controller = new AbortController();
+      const open = fs.open;
+      t.mock.method(fs, "link", async () => {
+        throw Object.assign(new Error("Unsupported"), { code: "ENOTSUP" });
+      });
+      t.mock.method(fs, "open", async (filename, ...args) => {
+        const handle = await open(filename, ...args);
+        if (
+          filename === destination &&
+          args[0] & require("node:fs").constants.O_EXCL
+        ) {
+          const write = handle.writeFile.bind(handle);
+          t.mock.method(handle, "writeFile", async (buffer) => {
+            await write(buffer.subarray(0, 2));
+            if (mode === "cancel") controller.abort();
+            else {
+              if (mode === "replacement") {
+                await fs.rename(destination, destination + ".original-partial");
+                await fs.writeFile(destination, "concurrent");
+              }
+              throw Object.assign(new Error("Disk write failed"), {
+                code: "EIO",
+              });
+            }
+          });
+        }
+        return handle;
+      });
+      await assert.rejects(
+        transfer(
+          downloadable(),
+          { bucket: "b" },
+          item(root),
+          controller.signal,
+        ),
+        mode === "cancel" ? { name: "AbortError" } : /Disk write failed/,
+      );
+      if (mode === "replacement") {
+        assert.equal(await fs.readFile(destination, "utf8"), "concurrent");
+        assert.deepEqual((await fs.readdir(root)).sort(), [
+          "file.txt",
+          "file.txt.original-partial",
+        ]);
+      } else assert.deepEqual(await fs.readdir(root), []);
+    });
+  }
+});
+
+test("a process crash cannot turn a partial fallback publication into a successful skip", async (t) => {
+  const { execFile } = require("node:child_process");
+  const execute = require("node:util").promisify(execFile);
+  for (const phase of ["partial", "complete", "different-profile"]) {
+    await t.test(phase, async (t) => {
+      const root = await fixture(t);
+      const entry = item(root);
+      const job = { profile: "original-connection", bucket: "b" };
+      const script = `
+        const fs = require('node:fs/promises');
+        const { Readable } = require('node:stream');
+        const { transfer } = require(${JSON.stringify(require.resolve("../src/downloads.cjs"))});
+        const entry = ${JSON.stringify(entry)};
+        fs.link = async () => { throw Object.assign(new Error('Unsupported'), {code: 'ENOTSUP'}); };
+        const open = fs.open;
+        const unlink = fs.unlink;
+        if (${JSON.stringify(phase)} === 'partial') fs.open = async (filename, ...args) => {
+          const handle = await open(filename, ...args);
+          if (filename === entry.source && args[0] & require('node:fs').constants.O_EXCL) {
+            const write = handle.writeFile.bind(handle);
+            handle.writeFile = async buffer => { await write(buffer.subarray(0, 2)); process.exit(77); };
+          }
+          return handle;
+        };
+        else fs.unlink = async filename => { if (filename.endsWith('.publish')) process.exit(77); return unlink(filename); };
+        transfer({send: async () => ({Body: Readable.from([Buffer.from('hello')])})}, ${JSON.stringify(job)}, entry, new AbortController().signal).catch(error => { console.error(error); process.exit(1); });
+      `;
+      await assert.rejects(execute(process.execPath, ["-e", script]), {
+        code: 77,
+      });
+      assert.ok(
+        (await fs.readdir(root)).some((name) => name.endsWith(".publish")),
+      );
+      if (phase === "partial") {
+        await assert.rejects(
+          transfer(downloadable(), job, entry, signal()),
+          /Unfinished download publication/,
+        );
+        assert.equal(await fs.readFile(entry.source, "utf8"), "he");
+        // Removing the ambiguous partial file explicitly permits a fresh retry.
+        await fs.unlink(entry.source);
+        assert.equal(
+          await transfer(downloadable(), job, entry, signal()),
+          "done",
+        );
+      } else {
+        if (phase === "different-profile") {
+          // The same bucket/key/opaque ETag on another connection is not the
+          // same remote object, even when the completed local bytes match.
+          await assert.rejects(
+            transfer(
+              downloadable(),
+              { ...job, profile: "other-connection" },
+              entry,
+              signal(),
+            ),
+            /Unfinished download publication/,
+          );
+          assert.ok(
+            (await fs.readdir(root)).some((name) => name.endsWith(".publish")),
+          );
+          assert.equal(await fs.readFile(entry.source, "utf8"), "hello");
+        }
+        assert.equal(
+          await transfer(
+            {
+              send: async () => {
+                throw new Error("No GET needed");
+              },
+            },
+            job,
+            entry,
+            signal(),
+          ),
+          "done",
+        );
+      }
+      assert.equal(await fs.readFile(entry.source, "utf8"), "hello");
+      assert.ok(
+        !(await fs.readdir(root)).some((name) => name.endsWith(".publish")),
+      );
+      assert.deepEqual(await fs.readdir(root), ["file.txt"]);
+    });
+  }
+});
+
+test("fallback rejects temporary content changes and destination symlink races", async (t) => {
+  for (const mode of ["temporary", "symlink"]) {
+    await t.test(mode, async (t) => {
+      const root = await fixture(t);
+      const outside = await fixture(t);
+      const destination = path.join(root, "file.txt");
+      const external = path.join(outside, "external");
+      await fs.writeFile(external, "keep me");
+      const open = fs.open;
+      let temporary;
+      t.mock.method(fs, "link", async (source) => {
+        temporary = source;
+        if (mode === "symlink") await fs.symlink(external, destination);
+        throw Object.assign(new Error("Unsupported"), { code: "ENOTSUP" });
+      });
+      t.mock.method(fs, "open", async (filename, ...args) => {
+        const handle = await open(filename, ...args);
+        if (
+          filename === destination &&
+          args[0] & require("node:fs").constants.O_EXCL
+        )
+          await fs.writeFile(temporary, "other");
+        return handle;
+      });
+      await assert.rejects(
+        transfer(downloadable(), { bucket: "b" }, item(root), signal()),
+        mode === "temporary" ? /changed during publication/ : /symlink/,
+      );
+      assert.equal(await fs.readFile(external, "utf8"), "keep me");
+      if (mode === "temporary") assert.deepEqual(await fs.readdir(root), []);
+      else assert.ok((await fs.lstat(destination)).isSymbolicLink());
+    });
+  }
+});

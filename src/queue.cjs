@@ -226,6 +226,7 @@ class Queue {
       expectedAbsent: "INTEGER NOT NULL DEFAULT 0",
       sha256: "TEXT",
       uploadToken: "TEXT",
+      integrityPending: "INTEGER NOT NULL DEFAULT 0",
     });
     this.db.exec(
       "UPDATE entries SET state='pending' WHERE state IN ('uploading','downloading','transferring'); UPDATE jobs SET state='paused' WHERE state='running'; UPDATE jobs SET state='failed', error='Folder scan was interrupted. Remove this batch and select the source again.' WHERE state='scanning'",
@@ -535,6 +536,14 @@ class Queue {
           entry.id,
         );
         const controller = new AbortController();
+        // Storage calls this before a write whose post-commit verification can
+        // fail. Persist first so a crash cannot turn the object into a skip.
+        entry.markIntegrityPending = () => {
+          this.db
+            .prepare("UPDATE entries SET integrityPending=1 WHERE id=?")
+            .run(entry.id);
+          entry.integrityPending = 1;
+        };
         run.controllers.add(controller);
         this.progress.set(entry.id, {
           job: id,
@@ -551,7 +560,9 @@ class Queue {
             }
             if (
               job.kind === "upload" &&
-              (entry.expectedAbsent || entry.etag) &&
+              (entry.expectedAbsent ||
+                entry.etag ||
+                context?.provider === "Google Cloud Storage") &&
               (!entry.sha256 || !entry.uploadToken)
             ) {
               // Older batches have no upload identity. Establish evidence before
@@ -620,11 +631,11 @@ class Queue {
             }
           }
           controller.signal.throwIfAborted();
-          setState.run(
-            result === "skipped" ? "skipped" : "done",
-            null,
-            entry.id,
-          );
+          this.db
+            .prepare(
+              "UPDATE entries SET state=?,error=NULL,integrityPending=0 WHERE id=?",
+            )
+            .run(result === "skipped" ? "skipped" : "done", entry.id);
         } catch (error) {
           setState.run(
             run.cancelled ? "cancelled" : run.paused ? "pending" : "failed",

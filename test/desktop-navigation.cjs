@@ -263,4 +263,224 @@ test("browser navigation regressions", async (t) => {
       await expect(page.locator("#files")).toContainText("file.txt");
     },
   );
+
+  await t.test(
+    "recursive search trims filtering without changing ordinary space matching",
+    async (t) => {
+      const page = await fixture(t);
+      await saved(page, 0).click();
+      await page.evaluate(() => {
+        window.s3["objects:search"] = async (options) => {
+          window.fixture.calls.push({ method: "search", ...options });
+          return {
+            folders: [],
+            objects: [
+              {
+                key:
+                  options.prefix +
+                  (options.token ? "report-next.txt" : "report.txt"),
+                size: 4,
+              },
+            ],
+            token: options.token ? null : "page2",
+            scanned: 1,
+          };
+        };
+      });
+      await page.locator("#search").fill(" report ");
+      await page.locator("#recursive-search").click();
+      await expect(page.locator("#files")).toContainText("report.txt");
+      await page.locator("#next").click();
+      await expect(page.locator("#files")).toContainText("report-next.txt");
+      expect(
+        await page.evaluate(() =>
+          window.fixture.calls
+            .filter((c) => c.method === "search")
+            .map((c) => [c.query, c.token]),
+        ),
+      ).toEqual([
+        ["report", null],
+        ["report", "page2"],
+      ]);
+      await page.locator("#clear-search").click();
+      await expect(page.locator("#search")).toHaveValue("");
+      await page.locator("#search").fill(" file ");
+      await expect(page.locator("#files [data-open]")).toHaveCount(0);
+      await page.locator("#search").fill("   ");
+      await page.locator("#recursive-search").click();
+      await expect(page.locator("#toast")).toContainText("Enter a search term");
+      expect(await page.evaluate(() => state.searchQuery)).toBeNull();
+    },
+  );
+
+  await t.test(
+    "transfer cards follow full job order and retain focused controls",
+    async (t) => {
+      const page = await fixture(t);
+      await page.evaluate(() => {
+        window.fixture.makeJob = (id) => ({
+          id,
+          profile: "a",
+          bucket: "bucket",
+          prefix: id,
+          state: "queued",
+          kind: "upload",
+          created: 1,
+          concurrency: 1,
+          overwrite: false,
+          done: 0,
+          skipped: 0,
+          failed: 0,
+          active: [],
+          total: 1,
+          bytes: 4,
+          completedBytes: 0,
+        });
+        window.fixture.jobs = ["old1", "old2"].map(window.fixture.makeJob);
+        window.s3.jobs = async () => window.fixture.jobs;
+      });
+      await page.locator("#queue-nav").click();
+      const cards = page.locator("#jobs > article");
+      await expect(cards).toHaveCount(2);
+      expect(await cards.evaluateAll((els) => els.map((e) => e.id))).toEqual([
+        "job-old1",
+        "job-old2",
+      ]);
+      const focused = page.locator("#job-old2 [data-action=start]");
+      await focused.focus();
+      await page.evaluate(async () => {
+        window.fixture.originalCard = document.getElementById("job-old2");
+        window.fixture.originalButton = document.activeElement;
+        window.fixture.jobs = ["new2", "new1", "old1", "old2"].map(
+          window.fixture.makeJob,
+        );
+        await refreshJobs();
+      });
+      expect(await cards.evaluateAll((els) => els.map((e) => e.id))).toEqual([
+        "job-new2",
+        "job-new1",
+        "job-old1",
+        "job-old2",
+      ]);
+      await expect(focused).toBeFocused();
+      // Exercise moving the focused card itself, as well as removing another card.
+      await page.evaluate(async () => {
+        window.fixture.jobs = ["old2", "new2", "new1"].map(
+          window.fixture.makeJob,
+        );
+        await refreshJobs();
+        await refreshJobs();
+      });
+      expect(await cards.evaluateAll((els) => els.map((e) => e.id))).toEqual([
+        "job-old2",
+        "job-new2",
+        "job-new1",
+      ]);
+      await expect(focused).toBeFocused();
+      // Older engines use insertBefore, which detaches the focused subtree.
+      await page.evaluate(async () => {
+        document.querySelector("#jobs").moveBefore = undefined;
+        window.fixture.jobs = ["new2", "new1", "old2"].map(
+          window.fixture.makeJob,
+        );
+        await refreshJobs();
+        window.fixture.jobs = ["old2", "new2", "new1"].map(
+          window.fixture.makeJob,
+        );
+        await refreshJobs();
+      });
+      await expect(focused).toBeFocused();
+      expect(
+        await page.evaluate(
+          () =>
+            document.getElementById("job-old2") ===
+              window.fixture.originalCard &&
+            document.activeElement === window.fixture.originalButton,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  for (const scenario of [
+    "mixed",
+    "conflict-only",
+    "unsupported-replacement",
+    "no-conflicts",
+  ]) {
+    await t.test(
+      `sync review explains partial plans: ${scenario}`,
+      async (t) => {
+        const page = await fixture(t);
+        await saved(page, 0).click();
+        await page.evaluate((scenario) => {
+          if (scenario === "unsupported-replacement")
+            state.profile.capabilities = { conditionalWrite: false };
+          window.s3["sync:compare"] = async () => ({
+            token: "review-token",
+            plan: {
+              source: "/local/folder",
+              entries:
+                scenario === "conflict-only"
+                  ? []
+                  : [
+                      {
+                        key: "new.txt",
+                        ...(scenario === "unsupported-replacement"
+                          ? { etag: '"reviewed"' }
+                          : {}),
+                      },
+                    ],
+              deletions: [],
+              rows:
+                scenario === "no-conflicts"
+                  ? []
+                  : [
+                      {
+                        key: "conflicting.txt",
+                        status: "conflict",
+                        reason: "Resolve this path before syncing.",
+                      },
+                    ],
+            },
+          });
+          window.s3["sync:apply"] = async (token) =>
+            window.fixture.calls.push({ method: "sync:apply", token });
+        }, scenario);
+        await page.locator("#sync-open").click();
+        await page.locator("#sync-compare").click();
+        if (scenario === "no-conflicts") {
+          await expect(page.locator("#sync-apply")).toHaveText(
+            "Confirm & queue sync",
+          );
+          await expect(page.locator("#workflow-body")).not.toContainText(
+            "unresolved conflict",
+          );
+        } else {
+          await expect(page.locator("#workflow-body")).toContainText(
+            "1 unresolved conflict",
+          );
+          await expect(page.locator("#workflow-body")).toContainText(
+            "Conflicting paths will remain unchanged",
+          );
+          await expect(page.locator("#sync-apply")).toHaveText(
+            "Queue non-conflicting changes",
+          );
+        }
+        if (["conflict-only", "unsupported-replacement"].includes(scenario)) {
+          await expect(page.locator("#sync-apply")).toBeDisabled();
+          if (scenario === "unsupported-replacement")
+            await expect(page.locator("#workflow-error")).toContainText(
+              "cannot safely replace reviewed objects",
+            );
+        } else {
+          await page.locator("#sync-apply").click();
+          expect(
+            await page.evaluate(() =>
+              window.fixture.calls.filter((c) => c.method === "sync:apply"),
+            ),
+          ).toEqual([{ method: "sync:apply", token: "review-token" }]);
+        }
+      },
+    );
+  }
 });

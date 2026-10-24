@@ -338,6 +338,38 @@ test("Azure staged uploads use unique ordered blocks and condition only the fina
   assert.deepEqual(commit[2].conditions, { ifMatch: '"reviewed"' });
 });
 
+test("Azure streamed upload limit rejects above the boundary before allocating", async (t) => {
+  const limit = 50000 * 128 * 1024 * 1024;
+  const f = fixture();
+  let allocated;
+  t.mock.method(Buffer, "allocUnsafe", (size) => {
+    allocated = size;
+    throw new Error("Stopped before allocating test block");
+  });
+  await assert.rejects(
+    f.adapter.upload({
+      Key: "large",
+      Body: Readable.from([]),
+      ContentLength: limit + 1,
+    }),
+    /6,710,886,400,000-byte \(~6\.104 TiB\) limit/,
+  );
+  assert.equal(allocated, undefined);
+  await assert.rejects(
+    f.adapter.upload({
+      Key: "large",
+      Body: Readable.from([]),
+      ContentLength: limit,
+    }),
+    /Stopped before allocating test block/,
+  );
+  assert.equal(allocated, 128 * 1024 * 1024);
+  assert.equal(
+    f.calls.some((call) => ["stage", "commit"].includes(call[0])),
+    false,
+  );
+});
+
 test("Azure server copy checks both guards and waits for successful completion", async () => {
   const f = fixture();
   const result = await f.adapter.send(
