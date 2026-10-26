@@ -80,9 +80,11 @@ class Workspace {
         ? {
             ...j,
             sync: true,
-            cleanupState: run.state,
-            state:
-              run.state === "cancelled"
+            cleanupState:
+              j.runtimeFailure && run.state !== "done" ? "failed" : run.state,
+            state: j.runtimeFailure
+              ? "failed"
+              : run.state === "cancelled"
                 ? "cancelled"
                 : run.state === "failed"
                   ? "failed"
@@ -91,7 +93,7 @@ class Workspace {
                     : run.state === "pending" && j.state === "complete"
                       ? "paused"
                       : j.state,
-            error: run.error || j.error,
+            error: j.error || run.error,
           }
         : j;
     });
@@ -122,17 +124,25 @@ class Workspace {
         .prepare("UPDATE sync_runs SET state='done',error=NULL WHERE job=?")
         .run(id);
     } catch (e) {
-      this.queue.db
-        .prepare(
-          "UPDATE sync_runs SET state=?,error=? WHERE job=? AND state!='cancelled'",
-        )
-        .run(
-          signal?.aborted ? "pending" : "failed",
-          signal?.aborted ? null : `Sync cleanup: ${e.message}`,
-          id,
+      try {
+        this.queue.db
+          .prepare(
+            "UPDATE sync_runs SET state=?,error=? WHERE job=? AND state!='cancelled'",
+          )
+          .run(
+            signal?.aborted ? "pending" : "failed",
+            signal?.aborted ? null : `Sync cleanup: ${e.message}`,
+            id,
+          );
+      } catch (recordingError) {
+        throw new AggregateError(
+          [e, recordingError],
+          `Sync cleanup: ${e.message}; Could not save cleanup failure: ${recordingError.message}`,
         );
+      }
     }
   }
+
   async start(id) {
     if (this.closed) throw new Error("The application is closing.");
     if (this.activeRun || this.finishing || this.queue.running)
@@ -142,49 +152,58 @@ class Workspace {
     const context = this.getClient(job.profile);
     const active = { id, controller: new AbortController() };
     this.activeRun = active;
-    this.activity(true);
     try {
+      this.activity(true);
       await this.queue.start(id, context);
       const finished = this.queue.running?.finished || Promise.resolve();
       this.finishing = finished
         .then(() => this.finishSync(id, active.controller.signal))
+        .catch((error) => {
+          this.auto = false;
+          this.queue.recordError(id, error);
+        })
         .finally(() => {
           this.finishing = null;
           this.activeRun = null;
-          this.activity(false);
-          const completed =
-            this.list().find((job) => job.id === id)?.state === "complete";
-          if (!completed) this.auto = false;
-          if (this.auto && !this.closed) setImmediate(() => this.advance());
+          try {
+            this.activity(false);
+            const completed =
+              this.list().find((job) => job.id === id)?.state === "complete";
+            if (!completed) this.auto = false;
+            if (this.auto && !this.closed) setImmediate(() => this.advance());
+          } catch (error) {
+            this.auto = false;
+            this.queue.recordError(id, error);
+          }
         });
-      // Report asynchronous coordinator failures as batch errors, never unhandled rejections.
-      this.finishing.catch((e) => {
-        this.auto = false;
-        this.queue.db
-          .prepare("UPDATE jobs SET state='failed',error=? WHERE id=?")
-          .run(e.message, id);
-      });
       return { started: true };
     } catch (e) {
       this.activeRun = null;
-      this.activity(false);
+      try {
+        this.activity(false);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [e, cleanupError],
+          `${e.message}; Could not release transfer activity: ${cleanupError.message}`,
+        );
+      }
       throw e;
     }
   }
   async advance() {
     if (!this.auto || this.closed || this.queue.running || this.finishing)
       return;
-    const next = this.list()
-      .reverse()
-      .find(
-        (j) =>
-          j.state === "paused" &&
-          !j.error &&
-          (j.total > j.done + j.skipped ||
-            (j.sync && j.cleanupState === "pending")),
-      );
-    if (!next) return;
     try {
+      const next = this.list()
+        .reverse()
+        .find(
+          (j) =>
+            j.state === "paused" &&
+            !j.error &&
+            (j.total > j.done + j.skipped ||
+              (j.sync && j.cleanupState === "pending")),
+        );
+      if (!next) return;
       await this.start(next.id);
     } catch {
       this.auto = false;
@@ -195,10 +214,17 @@ class Workspace {
     // Abort before waiting for uploads so a pause at their completion cannot
     // cross into cleanup. The same signal covers validation and remote I/O.
     this.activeRun?.controller.abort();
-    await this.queue.pause();
-    await this.finishing;
+    try {
+      await this.queue.pause();
+    } finally {
+      await this.finishing;
+    }
   }
   async cancel(id) {
+    const job = this.list().find((job) => job.id === id);
+    if (!job) throw new Error("Transfer batch not found.");
+    if (job.state === "complete")
+      throw new Error("Completed batches cannot be cancelled.");
     const active = this.activeRun?.id === id ? this.activeRun : null;
     this.queue.db
       .prepare("UPDATE sync_runs SET state='cancelled',error=NULL WHERE job=?")
@@ -207,7 +233,9 @@ class Workspace {
       this.auto = false;
       active.controller.abort();
     }
-    await this.queue.cancel(id);
+    await this.queue.cancel(id, {
+      cleanupPending: job.sync && job.cleanupState !== "done",
+    });
     if (active) await this.finishing;
   }
   retry(id) {
@@ -220,12 +248,12 @@ class Workspace {
       );
     if (this.finishing && this.queue.running?.id !== id)
       throw new Error("Wait for the current batch to finish.");
-    this.queue.retry(id);
     this.queue.db
       .prepare(
-        "UPDATE sync_runs SET state='pending',error=NULL WHERE job=? AND state='failed'",
+        "UPDATE sync_runs SET state='pending',error=NULL WHERE job=? AND state IN ('failed','running')",
       )
       .run(id);
+    this.queue.retry(id);
   }
   remove(id) {
     if (this.finishing)

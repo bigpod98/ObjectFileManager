@@ -1,0 +1,8 @@
+{
+  "name": "objectfilemanager-test-services",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "azurite": "3.35.0"
+  }
+}

@@ -12,6 +12,7 @@ const PAGE_SIZE = 500;
 const SEARCH_PAGES = 5;
 const snapshotSecrets = new WeakMap();
 const { requireCapability } = require("./provider-capabilities.cjs");
+const { foldSearch } = require("./search.js");
 
 function canonical(value) {
   if (value instanceof Date) return value.toISOString();
@@ -95,7 +96,7 @@ async function search(s3, { bucket, prefix = "", query = "", token }) {
   required(bucket, "Bucket");
   if (typeof prefix !== "string" || typeof query !== "string")
     throw new Error("Search prefix and query must be text.");
-  const needle = query.toLocaleLowerCase();
+  const needle = foldSearch(query);
   return operation("Recursive search", async () => {
     const objects = [];
     let scanned = 0;
@@ -115,11 +116,14 @@ async function search(s3, { bucket, prefix = "", query = "", token }) {
         scanned++;
         if (
           typeof item.Key !== "string" ||
-          item.Key === prefix ||
+          !item.Key ||
           !item.Key.startsWith(prefix)
         )
-          continue;
-        if (!item.Key.slice(prefix.length).toLocaleLowerCase().includes(needle))
+          throw new Error(
+            "The storage provider returned an object outside the requested search folder.",
+          );
+        if (item.Key === prefix) continue;
+        if (!foldSearch(item.Key.slice(prefix.length)).includes(needle))
           continue;
         objects.push({
           key: item.Key,
@@ -129,7 +133,10 @@ async function search(s3, { bucket, prefix = "", query = "", token }) {
         });
       }
       next = result.IsTruncated ? result.NextContinuationToken : undefined;
-      if (result.IsTruncated && (!next || seen.has(next)))
+      if (
+        result.IsTruncated &&
+        (typeof next !== "string" || !next || seen.has(next))
+      )
         throw new Error(
           "The storage provider returned an invalid search continuation token.",
         );

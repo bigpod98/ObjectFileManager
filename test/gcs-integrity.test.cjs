@@ -12,7 +12,11 @@ const payload = Buffer.from("payload");
 const crc = new sdk.CRC32C();
 crc.update(payload);
 
-async function fixture(t, checksum, { directory = false } = {}) {
+async function fixture(
+  t,
+  checksum,
+  { directory = false, overwrite = false, retries = 2 } = {},
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "gcs-integrity-"));
   const source = path.join(root, "file.txt");
   if (directory) await fs.mkdir(source);
@@ -26,6 +30,7 @@ async function fixture(t, checksum, { directory = false } = {}) {
     writes: 0,
     deletes: 0,
     failBeforeCommit: false,
+    conditions: [],
   };
   let queue;
   class Storage {
@@ -55,6 +60,13 @@ async function fixture(t, checksum, { directory = false } = {}) {
               assert.equal(entry.integrityPending, 1);
               assert.ok(entry.sha256);
               assert.ok(entry.uploadToken);
+              state.conditions.push(options.preconditionOpts);
+              assert.equal(
+                entry.integrityRevision,
+                options.preconditionOpts.ifGenerationMatch === 0
+                  ? "*"
+                  : `"gcs:${options.preconditionOpts.ifGenerationMatch}:${options.preconditionOpts.ifMetagenerationMatch}"`,
+              );
               const chunks = [];
               return new Writable({
                 write(chunk, encoding, done) {
@@ -63,9 +75,31 @@ async function fixture(t, checksum, { directory = false } = {}) {
                 },
                 final(done) {
                   state.writes++;
+                  if (state.pauseBeforeCommit) {
+                    state.pauseBeforeCommit = false;
+                    void queue.pause();
+                    done(new Error("Paused before commit"));
+                    return;
+                  }
                   if (state.failBeforeCommit) {
                     state.failBeforeCommit = false;
                     done(new Error("Connection failed before commit"));
+                    return;
+                  }
+                  const condition = options.preconditionOpts;
+                  if (
+                    (condition.ifGenerationMatch === 0 && state.remote) ||
+                    (condition.ifGenerationMatch !== 0 &&
+                      (state.remote?.metadata.generation !==
+                        condition.ifGenerationMatch ||
+                        state.remote?.metadata.metageneration !==
+                          condition.ifMetagenerationMatch))
+                  ) {
+                    done(
+                      Object.assign(new Error("Precondition failed"), {
+                        code: 412,
+                      }),
+                    );
                     return;
                   }
                   if (state.raceOnWrite) {
@@ -88,7 +122,9 @@ async function fixture(t, checksum, { directory = false } = {}) {
                   }
                   file.metadata = {
                     name: "file.txt",
-                    generation: "1",
+                    generation: String(
+                      Number(state.remote?.metadata.generation || 0) + 1,
+                    ),
                     metageneration: "1",
                     size: String(bytes.length),
                     crc32c: checksum,
@@ -101,7 +137,14 @@ async function fixture(t, checksum, { directory = false } = {}) {
                         ? Buffer.concat(chunks)
                         : Buffer.from("corrupt"),
                   };
-                  done();
+                  if (state.lostReply) {
+                    state.lostReply = false;
+                    done(
+                      Object.assign(new Error("Retry after lost reply"), {
+                        code: 412,
+                      }),
+                    );
+                  } else done();
                 },
               });
             },
@@ -130,6 +173,8 @@ async function fixture(t, checksum, { directory = false } = {}) {
     profile: "test",
     bucket: "bucket",
     sources: [source],
+    overwrite,
+    retries,
   });
   t.after(async () => {
     queue.db.close();
@@ -261,3 +306,166 @@ test("GCS directory integrity recovery also requires verified empty bytes", asyn
   assert.equal(result.skipped, 0);
   assert.equal(f.state.writes, 1);
 });
+
+function originalObject() {
+  return {
+    body: Buffer.from("original"),
+    metadata: {
+      generation: "9",
+      metageneration: "2",
+      size: "8",
+      metadata: {},
+    },
+  };
+}
+
+for (const recovery of ["automatic retry", "restart", "manual retry", "pause"])
+  test(`GCS interrupted replacement retries its durable original revision after ${recovery}`, async (t) => {
+    const f = await fixture(t, crc.toString(), {
+      overwrite: true,
+      retries: recovery === "automatic retry" ? 1 : 0,
+    });
+    f.state.remote = originalObject();
+    if (recovery === "pause") f.state.pauseBeforeCommit = true;
+    else f.state.failBeforeCommit = true;
+    const first = await f.run();
+    if (recovery !== "automatic retry") {
+      assert.equal(first.state, recovery === "pause" ? "paused" : "failed");
+      assert.equal(f.entry().integrityPending, 1);
+      assert.equal(f.entry().integrityRevision, '"gcs:9:2"');
+      if (recovery === "restart") f.reopen(true);
+      else if (recovery !== "pause") f.retry();
+      assert.equal((await f.run()).state, "complete");
+    } else assert.equal(first.state, "complete");
+    assert.equal(f.state.writes, 2);
+    assert.equal(f.entry().state, "done");
+    assert.equal(f.entry().integrityPending, 0);
+    assert.deepEqual(
+      f.state.conditions,
+      Array(2).fill({ ifGenerationMatch: "9", ifMetagenerationMatch: "2" }),
+    );
+  });
+
+for (const mutation of ["generation", "metageneration", "deletion"])
+  test(`GCS interrupted replacement fails closed after concurrent ${mutation}`, async (t) => {
+    const f = await fixture(t, crc.toString(), { overwrite: true, retries: 0 });
+    f.state.remote = originalObject();
+    f.state.failBeforeCommit = true;
+    assert.equal((await f.run()).state, "failed");
+    if (mutation === "deletion") f.state.remote = null;
+    else f.state.remote.metadata[mutation] = "10";
+    f.reopen(true);
+    const result = await f.run();
+    assert.equal(result.state, "failed");
+    assert.equal(result.done, 0);
+    assert.equal(result.skipped, 0);
+    assert.equal(f.state.writes, 1);
+    assert.equal(f.entry().integrityPending, 1);
+  });
+
+for (const overwrite of [false, true])
+  test(`GCS lost upload reply followed by SDK 412 records uploaded bytes with overwrite=${overwrite}`, async (t) => {
+    const f = await fixture(t, crc.toString(), { overwrite, retries: 0 });
+    if (overwrite) f.state.remote = originalObject();
+    f.state.lostReply = true;
+    const result = await f.run();
+    assert.equal(result.state, "complete");
+    assert.equal(result.done, 1);
+    assert.equal(result.skipped, 0);
+    assert.equal(f.state.writes, 1);
+  });
+
+for (const overwrite of [false, true])
+  test(`GCS prior committed operation is reconciled on restart with overwrite=${overwrite}`, async (t) => {
+    const f = await fixture(t, crc.toString(), { overwrite, retries: 0 });
+    assert.equal((await f.run()).done, 1);
+    f.reopen(true);
+    // Simulate an older queue that lost its pending bit after a remote commit.
+    f.queue.db.exec("UPDATE entries SET integrityPending=0");
+    const result = await f.run();
+    assert.equal(result.done, 1);
+    assert.equal(result.skipped, 0);
+    assert.equal(f.state.writes, 1);
+  });
+
+test("GCS legacy pending replacement without a durable revision requires review", async (t) => {
+  const f = await fixture(t, crc.toString(), { overwrite: true, retries: 0 });
+  f.state.remote = originalObject();
+  f.queue.db.exec(
+    "UPDATE entries SET integrityPending=1,integrityRevision=NULL",
+  );
+  assert.equal((await f.run()).state, "failed");
+  assert.equal(f.state.writes, 0);
+});
+
+test("GCS prior committed operation with corrupted bytes cannot become skipped", async (t) => {
+  const f = await fixture(t, crc.toString(), { retries: 0 });
+  assert.equal((await f.run()).done, 1);
+  f.state.remote.body = Buffer.from("corrupt");
+  f.reopen(true);
+  f.queue.db.exec("UPDATE entries SET integrityPending=0");
+  const result = await f.run();
+  assert.equal(result.state, "failed");
+  assert.equal(result.done, 0);
+  assert.equal(result.skipped, 0);
+  assert.equal(f.state.writes, 1);
+});
+
+test("GCS verified-absent retry still rejects a writer appearing at commit", async (t) => {
+  const f = await fixture(t, crc.toString(), { retries: 0 });
+  f.state.failBeforeCommit = true;
+  assert.equal((await f.run()).state, "failed");
+  assert.equal(f.entry().integrityRevision, "*");
+  f.state.raceOnWrite = true;
+  f.reopen(true);
+  const result = await f.run();
+  assert.equal(result.state, "failed");
+  assert.equal(result.done, 0);
+  assert.equal(result.skipped, 0);
+  assert.equal(f.state.writes, 2);
+  assert.equal(f.entry().integrityPending, 1);
+});
+
+test("GCS first-attempt create race records a foreign winner as skipped", async (t) => {
+  const f = await fixture(t, crc.toString(), { retries: 0 });
+  f.state.raceOnWrite = true;
+  const result = await f.run();
+  assert.equal(result.state, "complete");
+  assert.equal(result.done, 0);
+  assert.equal(result.skipped, 1);
+  assert.equal(f.state.writes, 1);
+});
+
+for (const retries of [0, 2])
+  test(`GCS first-attempt 412 after a corrupt owned commit remains failed with retries=${retries}`, async (t) => {
+    const f = await fixture(t, "AAAAAA==", { retries });
+    f.state.lostReply = true;
+    for (const attempt of ["initial", "manual", "restart"]) {
+      if (attempt === "manual") f.retry();
+      if (attempt === "restart") f.reopen(true);
+      const result = await f.run();
+      assert.equal(result.state, "failed", attempt);
+      assert.equal(result.done, 0, attempt);
+      assert.equal(result.skipped, 0, attempt);
+      assert.equal(f.entry().integrityPending, 1, attempt);
+      assert.equal(f.entry().integrityRevision, "*", attempt);
+      assert.equal(f.state.writes, 1, attempt);
+      assert.equal(f.state.deletes, 0, attempt);
+      assert.deepEqual(f.state.remote.body, Buffer.from("corrupt"));
+    }
+  });
+
+for (const overwrite of [false, true])
+  test(`GCS durable revision still protects a prior commit after its pending flag clears, overwrite=${overwrite}`, async (t) => {
+    const f = await fixture(t, crc.toString(), { overwrite, retries: 0 });
+    assert.equal((await f.run()).done, 1);
+    assert.equal(f.entry().integrityPending, 0);
+    f.state.remote = originalObject();
+    f.reopen(true);
+    const result = await f.run();
+    assert.equal(result.state, "failed");
+    assert.equal(result.done, 0);
+    assert.equal(result.skipped, 0);
+    assert.equal(f.state.writes, 1);
+    assert.equal(f.state.remote.metadata.generation, "9");
+  });

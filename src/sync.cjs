@@ -2,7 +2,13 @@ const fs = require("node:fs/promises");
 const { constants } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { createCRC32, createCRC32C } = require("./checksums.cjs");
 const { requireCapability } = require("./provider-capabilities.cjs");
+const {
+  selectRoot,
+  validateRoot,
+  validateParents,
+} = require("./local-roots.cjs");
 const {
   ListObjectsV2Command,
   HeadObjectCommand,
@@ -22,20 +28,23 @@ const identity = (stat) => ({
 });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-async function localTree(source, prefix, signal) {
+async function localTree(source, prefix, signal, expectedIdentity) {
   signal?.throwIfAborted();
-  source = path.resolve(source);
-  if ((await fs.realpath(source)) !== source)
-    throw new Error(
-      "Sync source and its parent directories must not be symbolic links.",
-    );
-  if (!(await fs.lstat(source)).isDirectory())
-    throw new Error("Choose a local folder to compare.");
+  let rootIdentity;
+  if (expectedIdentity) {
+    await validateRoot(source, expectedIdentity);
+    rootIdentity = expectedIdentity;
+  } else {
+    const selected = await selectRoot(source);
+    source = selected.root;
+    rootIdentity = selected.rootIdentity;
+  }
   const snapshot = [],
     entries = [],
     skipped = [];
   async function walk(file, relative) {
     signal?.throwIfAborted();
+    await validateParents(file, source, rootIdentity);
     const stat = await fs.lstat(file);
     signal?.throwIfAborted();
     const before = identity(stat);
@@ -60,6 +69,7 @@ async function localTree(source, prefix, signal) {
     const entry = {
       source: file,
       root: source,
+      rootIdentity,
       key,
       size: type === "directory" ? 0 : stat.size,
       mtime: stat.mtimeMs,
@@ -71,11 +81,14 @@ async function localTree(source, prefix, signal) {
         constants.O_RDONLY | constants.O_NOFOLLOW,
       );
       try {
+        await validateParents(file, source, rootIdentity);
         if (!same(identity(await handle.stat()), before))
           throw new Error(`Local source changed while comparing: ${file}`);
         const md5 = createHash("md5"),
           sha256 = createHash("sha256"),
-          sha1 = createHash("sha1");
+          sha1 = createHash("sha1"),
+          crc32 = createCRC32(),
+          crc32c = createCRC32C();
         for await (const chunk of handle.createReadStream({
           autoClose: false,
           signal,
@@ -84,12 +97,16 @@ async function localTree(source, prefix, signal) {
           md5.update(chunk);
           sha256.update(chunk);
           sha1.update(chunk);
+          crc32.update(chunk);
+          crc32c.update(chunk);
         }
         signal?.throwIfAborted();
         record.sha256 = sha256.digest("base64");
         entry.sha256 = record.sha256;
         entry.md5 = md5.digest("hex");
         entry.sha1 = sha1.digest("base64");
+        entry.crc32 = crc32.digest();
+        entry.crc32c = crc32c.digest();
       } finally {
         await handle.close();
       }
@@ -103,12 +120,14 @@ async function localTree(source, prefix, signal) {
           relative ? `${relative}/${name}` : name,
         );
     }
+    await validateParents(file, source, rootIdentity);
     if (!same(identity(await fs.lstat(file)), before))
       throw new Error(`Local source changed while comparing: ${file}`);
   }
   await walk(source, "");
   signal?.throwIfAborted();
-  return { source, snapshot, entries, skipped };
+  await validateRoot(source, rootIdentity);
+  return { source, rootIdentity, snapshot, entries, skipped };
 }
 
 async function head(s3, bucket, key, checksum = false, signal) {
@@ -151,6 +170,8 @@ async function head(s3, bucket, key, checksum = false, signal) {
       checksumSHA256: result.ChecksumSHA256,
       checksumSHA1: result.ChecksumSHA1,
       checksumMD5: result.ChecksumMD5,
+      checksumCRC32: result.ChecksumCRC32,
+      checksumCRC32C: result.ChecksumCRC32C,
       checksumType: result.ChecksumType,
       encryption: result.ServerSideEncryption,
     };
@@ -245,6 +266,14 @@ function comparison(local, remote) {
         remote.checksumMD5
         ? ["unchanged", "Full-object MD5 matches."]
         : ["changed", "Full-object MD5 differs."];
+    if (remote.checksumCRC32)
+      return local.crc32 === remote.checksumCRC32
+        ? ["unchanged", "Full-object CRC32 matches."]
+        : ["changed", "Full-object CRC32 differs."];
+    if (remote.checksumCRC32C)
+      return local.crc32c === remote.checksumCRC32C
+        ? ["unchanged", "Full-object CRC32C matches."]
+        : ["changed", "Full-object CRC32C differs."];
   }
   const etag = (remote.etag || "").replace(/^"|"$/g, "");
   if (
@@ -257,6 +286,7 @@ function comparison(local, remote) {
   return [
     "changed",
     "Content equality is uncertain: no supported full-object checksum or single-part MD5 ETag.",
+    true,
   ];
 }
 
@@ -333,13 +363,13 @@ async function compare(
         `Remote object changed during comparison: ${entry.key}. Compare again.`,
       );
     remoteSnapshot.push({ ...snapshotOf(current), exists: true });
-    let [status, reason] = comparison(entry, current);
+    let [status, reason, uncertain = false] = comparison(entry, current);
     if (status === "changed" && !current.etag) {
       status = "conflict";
       reason =
         "The server omitted the ETag needed to safely replace this object.";
     }
-    rows.push({ key: entry.key, size: entry.size, status, reason });
+    rows.push({ key: entry.key, size: entry.size, status, reason, uncertain });
     if (status === "changed") {
       entry.etag = current.etag;
       entries.push(entry);
@@ -389,14 +419,19 @@ async function compare(
     "remote-only": 0,
     conflict: 0,
     skipped: 0,
+    uncertain: 0,
     deletions: deletions.length,
   };
-  for (const row of rows) counts[row.status]++;
+  for (const row of rows) {
+    counts[row.status]++;
+    if (row.uncertain) counts.uncertain++;
+  }
   return {
     profile,
     bucket,
     prefix,
     source: local.source,
+    rootIdentity: local.rootIdentity,
     deleteRemote: !!deleteRemote,
     entries,
     deletions,
@@ -410,7 +445,12 @@ async function compare(
 async function validate(plan, s3, signal) {
   if (s3 && plan.entries?.some((entry) => entry.etag))
     requireCapability(s3, "conditionalWrite", "Sync replacements");
-  const current = await localTree(plan.source, plan.prefix, signal);
+  const current = await localTree(
+    plan.source,
+    plan.prefix,
+    signal,
+    plan.rootIdentity,
+  );
   signal?.throwIfAborted();
   if (!same(current.snapshot, plan.localSnapshot))
     throw new Error(
@@ -464,6 +504,11 @@ async function executeDeletions(s3, plan, signal) {
   await validate(plan, undefined, signal);
   // Complete preflight before making the first destructive request.
   const remaining = await validateDeletions(s3, plan, signal);
+  // Remote preflight can take long enough for local content to change. Finish
+  // another complete local check immediately before the first deletion. Local
+  // filesystem changes after this check cannot be atomically coupled to remote
+  // requests; conditional deletes still protect remote object revisions.
+  await validate(plan, undefined, signal);
   const failures = [];
   let deleted = (plan.deletions || []).length - remaining.length;
   for (const snapshot of remaining) {

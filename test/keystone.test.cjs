@@ -59,8 +59,12 @@ async function fixture(t, options = {}) {
       res.destroy(error);
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  origin = `http://127.0.0.1:${server.address().port}`;
+  const host = options.host || "127.0.0.1";
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, resolve);
+  });
+  origin = `http://${host.includes(":") ? `[${host}]` : host}:${server.address().port}`;
   const profile = {
     provider: "OpenStack Swift",
     swiftAuth: "keystone",
@@ -100,6 +104,51 @@ test("Keystone accepts root, v3, and token URLs without duplicating path segment
     "invalid",
   ])
     assert.throws(() => tokenUrl(value), /Keystone URL/);
+});
+
+test("Keystone URL construction preserves IPv6, IPv4, and DNS authorities", () => {
+  for (const authority of [
+    "[::1]:5000",
+    "127.0.0.1:5000",
+    "identity.example.test:5000",
+  ])
+    assert.equal(
+      tokenUrl(`http://${authority}/identity/v3`),
+      `http://${authority}/identity/v3/auth/tokens`,
+    );
+});
+
+test("Keystone authenticates and uses an IPv6 catalog endpoint", async (t) => {
+  let f;
+  try {
+    f = await fixture(t, { host: "::1" });
+  } catch (error) {
+    if (["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error.code)) {
+      t.skip("IPv6 loopback is unavailable");
+      return;
+    }
+    throw error;
+  }
+  await f.swift.send(new ListBucketsCommand({}));
+  assert.equal(f.calls.auth.length, 1);
+  assert.equal(f.calls.storage.length, 1);
+  assert.equal(f.calls.storage[0].token, "token-1");
+  assert.ok(f.calls.storage[0].url.startsWith("/v1/AUTH_project?"));
+});
+
+test("Keystone project IDs scope across domains without reusing the user's domain", async (t) => {
+  const { swift, calls } = await fixture(t, {
+    profile: {
+      projectId: "project",
+      projectName: "ignored-project-name",
+      domainId: "user-domain-id",
+    },
+  });
+  await swift.send(new ListBucketsCommand({}));
+  assert.deepEqual(calls.auth[0].auth.scope.project, { id: "project" });
+  assert.deepEqual(calls.auth[0].auth.identity.password.user.domain, {
+    id: "user-domain-id",
+  });
 });
 
 test("Keystone shares authentication, selects the region, and uses the existing Swift adapter", async (t) => {

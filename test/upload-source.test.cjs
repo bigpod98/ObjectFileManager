@@ -136,17 +136,24 @@ test("each retry rechecks ordinary-upload ancestors", async (t) => {
   assert.equal(q.failureReport(id)[0].attempts, 1);
 });
 
-test("scanning rejects selected files and folders beneath symlink ancestors", async (t) => {
+test("scanning canonicalizes symlink ancestors for folder and single-file selections", async (t) => {
   const { q, root } = await fixture(t);
-  const folder = path.join(root, "selected");
-  await writeSource(path.join(folder, "nested", "file.txt"));
-  await replaceDirectory(folder, "nested/file.txt");
-  await assert.rejects(scan(q, [path.join(folder, "nested")]), /symbolic link/);
-  await assert.rejects(
-    scan(q, [path.join(folder, "nested", "file.txt")]),
-    /symbolic link/,
+  const actual = path.join(root, "actual");
+  const alias = path.join(root, "alias");
+  await writeSource(path.join(actual, "nested", "file.txt"));
+  await fs.symlink(actual, alias, "dir");
+  const id = await scan(q, [
+    path.join(alias, "nested"),
+    path.join(alias, "nested", "file.txt"),
+  ]);
+  const entries = q.db.prepare("SELECT * FROM entries WHERE job=?").all(id);
+  assert.ok(
+    entries.every((entry) => entry.root === path.join(actual, "nested")),
   );
-  assert.ok(q.list().every((job) => job.state === "failed"));
+  assert.ok(
+    entries.every((entry) => entry.source.startsWith(actual + path.sep)),
+  );
+  assert.ok(entries.every((entry) => JSON.parse(entry.rootIdentity).ino));
 });
 
 test("scanning rechecks ancestors when a selected folder is replaced during traversal", async (t) => {
@@ -335,4 +342,71 @@ test("legitimate folder markers, nested files and single-file selections upload 
   ]);
   assert.equal(state.q.list()[0].done, 5);
   assert.equal(state.q.list()[0].failed, 0);
+});
+
+for (const selection of ["folder", "file"]) {
+  test(`a ${selection} selected through an ancestor alias keeps its original source after restart`, async (t) => {
+    const state = await fixture(t, storage.transfer);
+    const actual = path.join(state.root, "actual");
+    const other = path.join(state.root, "other");
+    const alias = path.join(state.root, "alias");
+    await writeSource(path.join(actual, "selected", "file.txt"));
+    await writeSource(path.join(other, "selected", "file.txt"), "evil");
+    await fs.symlink(actual, alias, "dir");
+    const selected = path.join(
+      alias,
+      "selected",
+      ...(selection === "file" ? ["file.txt"] : []),
+    );
+    const id = await scan(state.q, [selected], { overwrite: true });
+    state.q.db.close();
+    await fs.unlink(alias);
+    await fs.symlink(other, alias, "dir");
+    state.q = new Queue(state.file, storage.transfer);
+    const saved = state.q.db
+      .prepare("SELECT * FROM entries WHERE job=?")
+      .all(id);
+    assert.ok(
+      saved.every((entry) => entry.root === path.join(actual, "selected")),
+    );
+    assert.ok(saved.every((entry) => JSON.parse(entry.rootIdentity).ino));
+    const bytes = [];
+    await run(state.q, id, {
+      async send() {},
+      async upload(input) {
+        for await (const chunk of input.Body) bytes.push(chunk);
+      },
+    });
+    assert.equal(Buffer.concat(bytes).toString(), "safe");
+    assert.equal(state.q.list()[0].state, "complete");
+  });
+}
+
+test("persisted root identity rejects an ordinary directory replacement with matching file metadata", async (t) => {
+  const state = await fixture(t);
+  const folder = path.join(state.root, "selected");
+  await writeSource(path.join(folder, "file.txt"));
+  const id = await scan(state.q, [folder]);
+  const saved = state.q.db
+    .prepare("SELECT rootIdentity FROM entries WHERE job=?")
+    .get(id).rootIdentity;
+  state.q.db.close();
+  await fs.rename(folder, `${folder}-original`);
+  await writeSource(path.join(folder, "file.txt"), "evil");
+  let sent = 0;
+  state.q = new Queue(state.file, async () => {
+    sent++;
+  });
+  assert.equal(
+    state.q.db.prepare("SELECT rootIdentity FROM entries WHERE job=?").get(id)
+      .rootIdentity,
+    saved,
+  );
+  await run(state.q, id);
+  assert.equal(sent, 0);
+  assert.ok(
+    state.q
+      .failureReport(id)
+      .every((entry) => /root changed/.test(entry.error)),
+  );
 });

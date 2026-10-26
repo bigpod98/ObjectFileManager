@@ -58,7 +58,7 @@ function view(name) {
   $("#queue-view").hidden = name !== "queue";
   $("#browse-nav").classList.toggle("active", name === "browser");
   $("#queue-nav").classList.toggle("active", name === "queue");
-  if (name === "queue") refreshJobs().catch((e) => toast(e.message));
+  if (name === "queue") scheduleQueuePoll();
 }
 function renderConnections() {
   $("#connections").innerHTML = state.profiles
@@ -76,10 +76,11 @@ function storageNoun(provider = state.profile?.provider) {
     : "bucket";
 }
 async function selectConnection(id, location = null) {
-  state.navigation++;
+  const navigation = ++state.navigation;
   state.selection.clear();
   state.searchQuery = null;
   state.profile = state.profiles.find((p) => p.id === id);
+  const selectedProfile = state.profile;
   state.bucket = "";
   state.prefix = "";
   state.listing = null;
@@ -115,6 +116,16 @@ async function selectConnection(id, location = null) {
   $("#direct-bucket").value = state.profile.bucket || "";
   $("#list-buckets").disabled = false;
   renderFiles();
+  try {
+    const resolved = await api["connection:capabilities"](id);
+    if (state.profile !== selectedProfile) return;
+    state.profile.capabilities = resolved;
+    renderFiles();
+  } catch (error) {
+    if (state.profile !== selectedProfile) return;
+    toast(`Could not check connection capabilities: ${error.message}`);
+  }
+  if (navigation !== state.navigation) return;
   if (location) await openBucket(location.bucket, location.prefix);
   else if (state.profile.bucket) await openBucket(state.profile.bucket);
   else await listBuckets();
@@ -218,9 +229,9 @@ function renderFiles() {
   for (const b of $("#breadcrumbs").querySelectorAll("button"))
     b.onclick = act(() => navigate(crumbs[+b.dataset.index].prefix));
   const input = $("#search").value;
-  const filter = (
-    state.searchQuery !== null ? input.trim() : input
-  ).toLowerCase();
+  const filter = objectSearch.foldSearch(
+    state.searchQuery !== null ? input.trim() : input,
+  );
   const folders = new Set(state.listing?.folders || []);
   const rows = state.listing
     ? [
@@ -229,7 +240,9 @@ function renderFiles() {
           .filter((o) => o.key !== state.prefix && !folders.has(o.key))
           .map((o) => ({ ...o, folder: o.key.endsWith("/") })),
       ].filter((o) =>
-        o.key.slice(state.prefix.length).toLowerCase().includes(filter),
+        objectSearch
+          .foldSearch(o.key.slice(state.prefix.length))
+          .includes(filter),
       )
     : [];
   rows.sort(
@@ -435,12 +448,16 @@ async function refreshJobs() {
     ].includes(j.state);
     el.querySelector("[data-action=pause]").hidden = j.state !== "running";
     el.querySelector("[data-action=retry]").hidden =
-      (!j.failed && j.cleanupState !== "failed") ||
+      (!j.failed && j.cleanupState !== "failed" && !j.runtimeFailure) ||
       j.state === "running" ||
-      (!!j.error && j.cleanupState !== "failed") ||
+      (!!j.error && j.cleanupState !== "failed" && !j.runtimeFailure) ||
       !profile;
     el.querySelector("[data-action=retry]").textContent =
-      j.cleanupState === "failed" ? "Retry sync cleanup" : "Retry failed";
+      j.cleanupState === "failed"
+        ? "Retry sync cleanup"
+        : j.runtimeFailure
+          ? "Retry batch"
+          : "Retry failed";
     el.querySelector("[data-action=remove]").hidden = [
       "running",
       "scanning",
@@ -731,8 +748,10 @@ window.addEventListener(
   { once: true },
 );
 let polling = false;
-setInterval(async () => {
+let pollTimer;
+async function pollJobs() {
   if (polling) return;
+  clearTimeout(pollTimer);
   polling = true;
   try {
     await refreshJobs();
@@ -740,5 +759,17 @@ setInterval(async () => {
     toast(e.message);
   } finally {
     polling = false;
+    // Keep the background badge/status fresh at a lower cadence, and resume
+    // fast progress updates immediately when the queue becomes visible.
+    pollTimer = setTimeout(
+      pollJobs,
+      document.hidden ? 15000 : state.view === "queue" ? 1200 : 5000,
+    );
   }
-}, 1200);
+}
+function scheduleQueuePoll() {
+  clearTimeout(pollTimer);
+  if (!polling) pollTimer = setTimeout(pollJobs, 0);
+}
+document.addEventListener("visibilitychange", scheduleQueuePoll);
+pollTimer = setTimeout(pollJobs, 1200);

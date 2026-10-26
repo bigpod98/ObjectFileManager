@@ -140,6 +140,209 @@ test("move verifies its destination before guarded source deletion", async () =>
   assert.equal(f.calls[removeIndex].input.IfMatch, '"original"');
 });
 
+test("move completes when an object-specific absence confirms the source is gone after verified copy", async () => {
+  const errors = [
+    { name: "NoSuchKey" },
+    { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } },
+    {
+      name: "NotFound",
+      code: "BlobNotFound",
+      $metadata: { httpStatusCode: 404 },
+    },
+    {
+      name: "RestError",
+      details: { errorCode: "BlobNotFound" },
+      statusCode: 404,
+    },
+  ];
+  for (const fields of errors) {
+    for (const phase of ["head", "delete"]) {
+      const f = fixture();
+      const plan = await preview(f.s3, options("move"));
+      let sourceHeads = 0;
+      f.intercept((type, input) => {
+        if (
+          (type === "HeadObjectCommand" &&
+            input.Bucket === "source" &&
+            ++sourceHeads === 2 &&
+            phase === "head") ||
+          (type === "DeleteObjectCommand" && phase === "delete")
+        ) {
+          f.objects.delete("source/a");
+          throw Object.assign(new Error("source object disappeared"), fields);
+        }
+      });
+      const result = await execute(f.s3, plan);
+      assert.equal(result.succeeded, 1, `${phase}: ${JSON.stringify(fields)}`);
+      assert.equal(result.failed, 0);
+      assert.equal(result.copied, 1);
+      assert.equal(result.deleted, 1);
+      assert.equal(f.objects.has("source/a"), false);
+      assert.equal(f.objects.get("target/a").ETag, '"original"');
+      const deletes = f.calls.filter(
+        (call) => call.type === "DeleteObjectCommand",
+      );
+      assert.equal(deletes.length, phase === "head" ? 0 : 1);
+      assert.ok(deletes.every((call) => call.input.IfMatch === '"original"'));
+    }
+  }
+});
+
+test("move fails on ambiguous 404s, missing buckets or endpoints, permission errors and 412 without retrying deletion", async () => {
+  const errors = [
+    { name: "NotFound", $metadata: { httpStatusCode: 404 } },
+    { $metadata: { httpStatusCode: 404 } },
+    { name: "NoSuchBucket", $metadata: { httpStatusCode: 404 } },
+    {
+      name: "NotFound",
+      code: "ContainerNotFound",
+      $metadata: { httpStatusCode: 404 },
+    },
+    { name: "EndpointNotFound", $metadata: { httpStatusCode: 404 } },
+    { code: "ENOTFOUND" },
+    { name: "AccessDenied", $metadata: { httpStatusCode: 403 } },
+    { name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } },
+    { name: "NoSuchKey", $metadata: { httpStatusCode: 403 } },
+    { name: "NoSuchKey", $metadata: { httpStatusCode: 412 } },
+    { name: "NoSuchKey", $metadata: { httpStatusCode: 404 }, statusCode: 403 },
+    {
+      name: "NoSuchKey",
+      $metadata: { httpStatusCode: 404 },
+      response: { status: 412 },
+    },
+    {
+      name: "NoSuchKey",
+      Code: "NoSuchBucket",
+      $metadata: { httpStatusCode: 404 },
+    },
+  ];
+  for (const fields of errors) {
+    for (const phase of ["head", "delete"]) {
+      const f = fixture();
+      const plan = await preview(f.s3, options("move"));
+      let sourceHeads = 0;
+      f.intercept((type, input) => {
+        if (
+          (type === "HeadObjectCommand" &&
+            input.Bucket === "source" &&
+            ++sourceHeads === 2 &&
+            phase === "head") ||
+          (type === "DeleteObjectCommand" && phase === "delete")
+        )
+          throw Object.assign(new Error("guarded source step failed"), fields);
+      });
+      const result = await execute(f.s3, plan);
+      assert.equal(result.succeeded, 0, `${phase}: ${JSON.stringify(fields)}`);
+      assert.equal(result.failed, 1);
+      assert.equal(result.copied, 1);
+      assert.equal(result.deleted, 0);
+      assert.equal(result.failures[0].stage, "delete");
+      assert.equal(f.objects.has("source/a"), true);
+      assert.equal(f.objects.has("target/a"), true);
+      const deletes = f.calls.filter(
+        (call) => call.type === "DeleteObjectCommand",
+      );
+      assert.equal(deletes.length, phase === "head" ? 0 : 1);
+      assert.ok(deletes.every((call) => call.input.IfMatch === '"original"'));
+    }
+  }
+});
+
+test("move never accepts source absence before copying or when destination verification fails", async () => {
+  for (const phase of ["validate", "verify"]) {
+    const f = fixture();
+    const plan = await preview(f.s3, options("move"));
+    f.intercept((type, input) => {
+      if (
+        phase === "validate" &&
+        type === "HeadObjectCommand" &&
+        input.Bucket === "source"
+      )
+        throw Object.assign(new Error("missing source"), { name: "NoSuchKey" });
+      if (phase === "verify" && type === "CopyObjectCommand") {
+        f.objects.delete("source/a");
+        f.objects.set("target/a", object({ ETag: '"unverified"' }));
+        return { CopyObjectResult: { ETag: '"original"' } };
+      }
+    });
+    const result = await execute(f.s3, plan);
+    assert.equal(result.succeeded, 0);
+    assert.equal(result.failed, 1);
+    assert.equal(result.deleted, 0);
+    assert.equal(result.failures[0].stage, phase);
+    assert.equal(
+      f.calls.some((call) => call.type === "DeleteObjectCommand"),
+      false,
+    );
+  }
+});
+
+test("destination prechecks reject missing-bucket and ambiguous endpoint errors", async () => {
+  for (const fields of [
+    { name: "NoSuchBucket", $metadata: { httpStatusCode: 404 } },
+    {
+      name: "NotFound",
+      code: "ContainerNotFound",
+      $metadata: { httpStatusCode: 404 },
+    },
+    { $metadata: { httpStatusCode: 404 } },
+  ]) {
+    const f = fixture();
+    f.intercept((type, input) => {
+      if (type === "HeadObjectCommand" && input.Bucket === "target")
+        throw Object.assign(new Error("destination unavailable"), fields);
+    });
+    await assert.rejects(
+      preview(f.s3, options("move")),
+      /destination unavailable/,
+    );
+    assert.equal(
+      f.calls.some((call) => call.type === "CopyObjectCommand"),
+      false,
+    );
+  }
+});
+
+test("folder preview rejects malformed keys and missing, malformed or repeated pagination tokens", async () => {
+  for (const page of [
+    { Contents: [{ Key: "other/file" }] },
+    { Contents: [{ Key: 42 }] },
+    { Contents: [{}] },
+    ...[undefined, "", 42, {}, []].map((token) => ({
+      IsTruncated: true,
+      NextContinuationToken: token,
+    })),
+  ]) {
+    const f = fixture();
+    f.intercept((type) => (type === "ListObjectsV2Command" ? page : undefined));
+    await assert.rejects(
+      preview(
+        f.s3,
+        options("move", { selection: [{ key: "folder/", folder: true }] }),
+      ),
+      /outside the selected folder|invalid folder pagination/,
+    );
+    assert.equal(
+      f.calls.some((call) => call.type === "HeadObjectCommand"),
+      false,
+    );
+  }
+  const f = fixture();
+  f.intercept((type) =>
+    type === "ListObjectsV2Command"
+      ? { IsTruncated: true, NextContinuationToken: "same" }
+      : undefined,
+  );
+  await assert.rejects(
+    preview(
+      f.s3,
+      options("move", { selection: [{ key: "folder/", folder: true }] }),
+    ),
+    /invalid folder pagination/,
+  );
+  assert.equal(f.calls.length, 2);
+});
+
 test("changed source fails a reviewed deletion and new folder objects are retained", async () => {
   const f = fixture({ "source/f/a": object(), "source/f/b": object() });
   const plan = await preview(

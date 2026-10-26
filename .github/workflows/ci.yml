@@ -17,17 +17,17 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     container:
-      image: node:22-bookworm
+      image: node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
     timeout-minutes: 60
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Install desktop test dependencies
         run: bash scripts/ci/install-deps.sh
       - name: Install pinned Go toolchain for MinIO source build
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.25.5"
           cache: false

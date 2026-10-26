@@ -1,6 +1,6 @@
 # Arch's official Docker image is x86_64 only. Bootstrap the ARM port from its
 # upstream root filesystem, then use its signed package repositories.
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS rootfs
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS rootfs
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gpg gpgv libarchive-tools
 # The rootfs supplies the pacman keyring that every later package check relies
 # on, so it is extracted only after its upstream detached signature verifies.

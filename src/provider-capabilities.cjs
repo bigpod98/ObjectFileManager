@@ -37,9 +37,28 @@ function capabilities(connection = {}) {
             )),
       };
     case "Google Cloud Storage":
-      return { ...defaults, multipart: false };
+      // ADC and key files need runtime resolution: user ADC cannot sign, while
+      // service accounts and impersonated credentials may use IAM signBlob.
+      return {
+        ...defaults,
+        multipart: false,
+        signedUrl: googleLocalSigner(connection),
+      };
     default:
       return { ...defaults };
+  }
+}
+
+function googleLocalSigner(connection) {
+  if (connection.googleAuth && connection.googleAuth !== "json") return false;
+  if (!connection.googleAuth && connection.keyFilename) return false;
+  try {
+    const key = JSON.parse(connection.serviceAccountJson || connection.keyFile);
+    return (
+      key?.type === "service_account" && !!key.client_email && !!key.private_key
+    );
+  } catch {
+    return false;
   }
 }
 

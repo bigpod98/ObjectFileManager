@@ -113,6 +113,159 @@ function fixture(overrides = {}) {
 }
 const command = (name, input = {}) => new commands[name + "Command"](input);
 
+test("Azure rejects unsafe keys before constructing any SDK blob URL", async () => {
+  const unsafeKeys = [
+    ".",
+    "..",
+    "../other-container/object",
+    "folder/../../object",
+    "folder/./object",
+    "folder/..",
+    "/..//object",
+  ];
+  for (const Key of unsafeKeys) {
+    for (const name of [
+      "HeadObject",
+      "GetObject",
+      "PutObject",
+      "DeleteObject",
+      "GetObjectTagging",
+      "CopyObject",
+    ]) {
+      const f = fixture();
+      await assert.rejects(
+        f.adapter.send(
+          command(name, {
+            Bucket: "container",
+            Key,
+            CopySource: "source/safe-object",
+          }),
+        ),
+        /dot path segments/,
+      );
+      assert.deepEqual(f.calls, [], `${name} must not construct SDK URLs`);
+    }
+    const f = fixture();
+    await assert.rejects(
+      f.adapter.upload({ Bucket: "container", Key, Body: Buffer.from("data") }),
+      /dot path segments/,
+    );
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test("Azure validates decoded copy source keys and containers before SDK URLs", async () => {
+  for (const CopySource of [
+    "source/../other-container/object",
+    "source/%2e%2E%2Fother-container%2Fobject?versionId=v1",
+    "/source/folder%2F.%2Fobject",
+    "source/folder/%2e%2e",
+    "%2e%2e/object",
+  ]) {
+    for (const MetadataDirective of ["COPY", "REPLACE"]) {
+      const f = fixture();
+      await assert.rejects(
+        f.adapter.send(
+          command("CopyObject", {
+            Bucket: "dest",
+            Key: "safe",
+            CopySource,
+            MetadataDirective,
+          }),
+        ),
+        /dot path segments/,
+      );
+      assert.deepEqual(f.calls, []);
+    }
+  }
+});
+
+test("Azure copies decoded nested names while preserving literal percent sequences", async () => {
+  const f = fixture();
+  await f.adapter.send(
+    command("CopyObject", {
+      Bucket: "dest",
+      Key: "nested/copy",
+      CopySource: "source/folder%2Fa..b%2F%252e%2F%C3%A9%20%3F%23?versionId=v1",
+    }),
+  );
+  assert.deepEqual(
+    f.calls.filter(([method]) => method === "blob"),
+    [
+      ["blob", "folder/a..b/%2e/é ?#"],
+      ["blob", "nested/copy"],
+    ],
+  );
+  assert.ok(f.calls.some(([method]) => method === "copy"));
+});
+
+test("Azure native SDK sends zero requests for unsafe keys and preserves nested names", async (t) => {
+  const http = require("node:http");
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push({ method: req.method, url: req.url });
+    req.resume();
+    res.writeHead(200, { "content-length": 0, etag: '"etag"' });
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const adapter = client({
+    accountName: "account",
+    accountKey: Buffer.alloc(32, 7).toString("base64"),
+    endpoint: `http://127.0.0.1:${server.address().port}/account`,
+  });
+  for (const name of [
+    "HeadObject",
+    "GetObject",
+    "PutObject",
+    "DeleteObject",
+    "GetObjectTagging",
+    "CopyObject",
+  ])
+    await assert.rejects(
+      adapter.send(
+        command(name, {
+          Bucket: "container",
+          Key: "../outside/object",
+          CopySource: "source/safe",
+        }),
+      ),
+      /dot path segments/,
+    );
+  await assert.rejects(
+    adapter.upload({ Bucket: "container", Key: "../outside/object" }),
+    /dot path segments/,
+  );
+  await assert.rejects(
+    adapter.send(
+      command("CopyObject", {
+        Bucket: "container",
+        Key: "safe",
+        CopySource: "source/%2E%2e/outside/object",
+      }),
+    ),
+    /dot path segments/,
+  );
+  assert.throws(
+    () => adapter.signedUrl({ Bucket: "container", Key: "../outside" }, 60),
+    /dot path segments/,
+  );
+  assert.deepEqual(requests, []);
+  const Key = "folder/a..b/%2e/é ?#/file\\name";
+  const expected =
+    "/account/container/folder/a..b/%252e/%C3%A9%20%3F%23/file%5Cname";
+  await adapter.send(command("HeadObject", { Bucket: "container", Key }));
+  assert.deepEqual(requests, [{ method: "HEAD", url: expected }]);
+  const signed = new URL(
+    await adapter.signedUrl({ Bucket: "container", Key }, 60),
+  );
+  assert.equal(signed.pathname, expected);
+});
+
 test("Azure lists containers and translates flat/hierarchical continuation pages", async () => {
   const f = fixture();
   assert.deepEqual(

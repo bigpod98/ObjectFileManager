@@ -14,7 +14,11 @@ const {
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
 
-async function fixture(t, handler, { prefix = "", info } = {}) {
+async function fixture(
+  t,
+  handler,
+  { prefix = "", info, host = "127.0.0.1", hostname = host } = {},
+) {
   const requests = [];
   const infoRequests = [];
   const server = http.createServer((req, res) => {
@@ -30,9 +34,13 @@ async function fixture(t, handler, { prefix = "", info } = {}) {
       res.destroy(e);
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, resolve);
+  });
+  const authority = hostname.includes(":") ? `[${hostname}]` : hostname;
   const profile = {
-    endpoint: `http://127.0.0.1:${server.address().port}${prefix}/v1/AUTH_test`,
+    endpoint: `http://${authority}:${server.address().port}${prefix}/v1/AUTH_test`,
     swiftToken: "test-token",
     swiftTempUrlKey: "temp-secret",
   };
@@ -49,6 +57,48 @@ async function body(stream) {
   for await (const chunk of stream) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
+
+test("Swift requests support IPv6, IPv4, and DNS account endpoints", async (t) => {
+  for (const hostname of ["::1", "127.0.0.1", "localhost"]) {
+    await t.test(hostname, async (t) => {
+      let f;
+      try {
+        f = await fixture(
+          t,
+          async (req, res) => {
+            if (req.method === "GET") res.end("[]");
+            else {
+              assert.equal(req.url, "/v1/AUTH_test/container/folder/object");
+              assert.equal((await body(req)).toString(), "data");
+              res.writeHead(201);
+              res.end();
+            }
+          },
+          { host: hostname === "::1" ? "::1" : "127.0.0.1", hostname },
+        );
+      } catch (error) {
+        if (
+          hostname === "::1" &&
+          ["EAFNOSUPPORT", "EADDRNOTAVAIL"].includes(error.code)
+        ) {
+          t.skip("IPv6 loopback is unavailable");
+          return;
+        }
+        throw error;
+      }
+      await f.swift.send(new ListBucketsCommand({}));
+      await f.swift.upload({
+        Bucket: "container",
+        Key: "folder/object",
+        Body: Buffer.from("data"),
+      });
+      assert.equal(f.requests.length, 2);
+      assert.equal(f.infoRequests.length, 1);
+      for (const req of [...f.requests, ...f.infoRequests])
+        assert.equal(req.headers.host, new URL(f.profile.endpoint).host);
+    });
+  }
+});
 
 test("Swift account and delimiter listings retain pagination and UTC timestamps", async (t) => {
   const { swift } = await fixture(t, (req, res) => {

@@ -345,6 +345,95 @@ test("cleanup stops if new local content appears after uploads", async (t) => {
   );
 });
 
+for (const change of ["add", "modify", "replace-root", "symlink-root"]) {
+  test(`cleanup performs zero deletes when local ${change} happens during remote preflight`, async (t) => {
+    const base = await source(t, { "selected/same": "abc" });
+    const root = path.join(base, "selected");
+    const s3 = remote({ same: "abc", first: "remote", last: "remote" });
+    const plan = await compare(s3, {
+      bucket: "b",
+      source: root,
+      deleteRemote: true,
+    });
+    const send = s3.send.bind(s3);
+    let changed = false;
+    s3.send = async (command) => {
+      const result = await send(command);
+      if (
+        command.constructor.name === "HeadObjectCommand" &&
+        command.input.Key === "last"
+      ) {
+        changed = true;
+        if (change === "add")
+          await fs.writeFile(path.join(root, "first"), "new local bytes");
+        if (change === "modify")
+          await fs.writeFile(path.join(root, "same"), "xyz");
+        if (change === "replace-root" || change === "symlink-root") {
+          await fs.rename(root, `${root}-original`);
+          await fs.mkdir(root);
+          await fs.writeFile(path.join(root, "same"), "abc");
+          if (change === "symlink-root") {
+            await fs.rename(root, `${root}-other`);
+            await fs.symlink(`${root}-other`, root, "dir");
+          }
+        }
+      }
+      return result;
+    };
+    await assert.rejects(
+      executeDeletions(s3, plan),
+      /Local folder contents changed|root changed|symbolic link/,
+    );
+    assert.equal(changed, true);
+    assert.equal(
+      s3.calls.filter((call) => call.type === "DeleteObjectCommand").length,
+      0,
+    );
+    assert.ok(s3.state.has("first"));
+    assert.ok(s3.state.has("last"));
+  });
+}
+
+test("sync through a symlink ancestor keeps the canonical root and identity across saved previews", async (t) => {
+  const base = await source(t, {
+    "actual/selected/file": "abc",
+    "other/selected/file": "evil",
+  });
+  const alias = path.join(base, "alias");
+  await fs.symlink(path.join(base, "actual"), alias, "dir");
+  const s3 = remote({ extra: "remote" });
+  const saved = JSON.parse(
+    JSON.stringify(
+      await compare(s3, {
+        bucket: "b",
+        source: path.join(alias, "selected"),
+        deleteRemote: true,
+      }),
+    ),
+  );
+  const root = path.join(base, "actual", "selected");
+  assert.equal(saved.source, root);
+  assert.ok(JSON.parse(saved.rootIdentity).ino);
+  assert.ok(
+    saved.entries.every(
+      (entry) =>
+        entry.root === root && entry.rootIdentity === saved.rootIdentity,
+    ),
+  );
+  await fs.unlink(alias);
+  await fs.symlink(path.join(base, "other"), alias, "dir");
+  assert.equal(await validate(saved), true);
+  await fs.rename(root, `${root}-original`);
+  await fs.mkdir(root);
+  await fs.writeFile(path.join(root, "file"), "abc");
+  await assert.rejects(validate(saved), /root changed/);
+  await assert.rejects(executeDeletions(s3, saved), /root changed/);
+  assert.equal(
+    s3.calls.filter((call) => call.type === "DeleteObjectCommand").length,
+    0,
+  );
+});
+
 test("apply refuses a newly created remote destination and retains objects without ETags", async (t) => {
   const root = await source(t, { fresh: "local" });
   const s3 = remote({ unguarded: { ContentLength: 5 } });

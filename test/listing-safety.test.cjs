@@ -85,6 +85,7 @@ test("browse preserves valid folder markers, root listings and pagination", asyn
       { Key: "folder/", Size: 0 },
       { Key: "folder/file", Size: 5 },
     ],
+    IsTruncated: true,
     NextContinuationToken: "next",
   };
   const adapter = { send: async () => page };
@@ -96,4 +97,47 @@ test("browse preserves valid folder markers, root listings and pagination", asyn
   );
   assert.equal(listing.token, "next");
   assert.equal((await browse(adapter, "bucket")).objects.length, 2);
+});
+
+test("browse rejects malformed or repeated truncated-page tokens", async () => {
+  for (const token of [undefined, null, "", 42, {}, [], "same"]) {
+    await assert.rejects(
+      browse(
+        {
+          send: async () => ({
+            Contents: [{ Key: "folder/file" }],
+            IsTruncated: true,
+            NextContinuationToken: token,
+          }),
+        },
+        "bucket",
+        "folder/",
+        "same",
+      ),
+      /invalid folder pagination/,
+    );
+  }
+});
+
+test("browse skips only the exact folder marker and ignores terminal-page tokens", async () => {
+  const listing = await browse(
+    {
+      send: async () => ({
+        Contents: [
+          { Key: "folder/" },
+          { Key: "folder/nested/" },
+          { Key: "folder/file/with/slashes" },
+        ],
+        IsTruncated: false,
+        NextContinuationToken: "stale",
+      }),
+    },
+    "bucket",
+    "folder/",
+  );
+  assert.deepEqual(
+    listing.objects.map((object) => object.key),
+    ["folder/nested/", "folder/file/with/slashes"],
+  );
+  assert.equal(listing.token, null);
 });

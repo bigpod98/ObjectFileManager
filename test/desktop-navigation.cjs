@@ -401,11 +401,54 @@ test("browser navigation regressions", async (t) => {
     },
   );
 
+  await t.test(
+    "runtime failures offer explicit retry while scan errors remain blocked",
+    async (t) => {
+      const page = await fixture(t);
+      await page.evaluate(() => {
+        window.s3.jobs = async () =>
+          [1, 0].map((runtimeFailure) => ({
+            id: runtimeFailure ? "runtime" : "scan",
+            profile: "a",
+            bucket: "bucket",
+            prefix: "",
+            state: "failed",
+            kind: "upload",
+            created: 1,
+            concurrency: 1,
+            overwrite: false,
+            done: 0,
+            skipped: 0,
+            failed: 0,
+            active: [],
+            total: 1,
+            bytes: 4,
+            completedBytes: 0,
+            runtimeFailure,
+            error: runtimeFailure
+              ? "Temporary database failure"
+              : "Folder scan interrupted",
+          }));
+        window.s3.retry = async (id) => {
+          window.fixture.retried = id;
+        };
+      });
+      await page.locator("#queue-nav").click();
+      const retry = page.locator("#job-runtime [data-action=retry]");
+      await expect(retry).toBeVisible();
+      await expect(retry).toHaveText("Retry batch");
+      await expect(page.locator("#job-scan [data-action=retry]")).toBeHidden();
+      await retry.click();
+      expect(await page.evaluate(() => window.fixture.retried)).toBe("runtime");
+    },
+  );
+
   for (const scenario of [
     "mixed",
     "conflict-only",
     "unsupported-replacement",
     "no-conflicts",
+    "uncertain",
   ]) {
     await t.test(
       `sync review explains partial plans: ${scenario}`,
@@ -431,16 +474,16 @@ test("browser navigation regressions", async (t) => {
                       },
                     ],
               deletions: [],
-              rows:
-                scenario === "no-conflicts"
-                  ? []
-                  : [
-                      {
-                        key: "conflicting.txt",
-                        status: "conflict",
-                        reason: "Resolve this path before syncing.",
-                      },
-                    ],
+              counts: { uncertain: scenario === "uncertain" ? 1 : 0 },
+              rows: ["no-conflicts", "uncertain"].includes(scenario)
+                ? []
+                : [
+                    {
+                      key: "conflicting.txt",
+                      status: "conflict",
+                      reason: "Resolve this path before syncing.",
+                    },
+                  ],
             },
           });
           window.s3["sync:apply"] = async (token) =>
@@ -448,7 +491,7 @@ test("browser navigation regressions", async (t) => {
         }, scenario);
         await page.locator("#sync-open").click();
         await page.locator("#sync-compare").click();
-        if (scenario === "no-conflicts") {
+        if (["no-conflicts", "uncertain"].includes(scenario)) {
           await expect(page.locator("#sync-apply")).toHaveText(
             "Confirm & queue sync",
           );
@@ -465,6 +508,16 @@ test("browser navigation regressions", async (t) => {
           await expect(page.locator("#sync-apply")).toHaveText(
             "Queue non-conflicting changes",
           );
+        }
+        if (scenario === "uncertain") {
+          await expect(page.locator("#sync-uncertain")).toContainText(
+            "1 file has unproven content equality",
+          );
+          await expect(page.locator("#sync-uncertain")).toContainText(
+            "Uploads remain included",
+          );
+        } else {
+          await expect(page.locator("#sync-uncertain")).toHaveCount(0);
         }
         if (["conflict-only", "unsupported-replacement"].includes(scenario)) {
           await expect(page.locator("#sync-apply")).toBeDisabled();

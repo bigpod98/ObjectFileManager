@@ -13,6 +13,11 @@ const {
 
 const GiB = 1024 ** 3;
 const { requireCapability } = require("./provider-capabilities.cjs");
+const objectLockAttributes = [
+  "ObjectLockMode",
+  "ObjectLockRetainUntilDate",
+  "ObjectLockLegalHoldStatus",
+];
 function checkOperation(s3, action) {
   if (action !== "delete") requireCapability(s3, "copy", "Reviewed copy");
   if (action !== "copy")
@@ -31,15 +36,46 @@ const attributesToPreserve = [
   "ServerSideEncryption",
   "SSEKMSKeyId",
   "BucketKeyEnabled",
-  "ObjectLockMode",
-  "ObjectLockRetainUntilDate",
-  "ObjectLockLegalHoldStatus",
+  ...objectLockAttributes,
 ];
 const prefixOf = (value = "") =>
   value && !value.endsWith("/") ? `${value}/` : value;
-const notFound = (error) =>
-  error?.$metadata?.httpStatusCode === 404 ||
-  ["NotFound", "NoSuchKey"].includes(error?.name);
+function notFound(error, allowGeneric = false) {
+  const codes = [
+    error?.name,
+    error?.Code,
+    error?.code,
+    error?.details?.errorCode,
+  ]
+    .filter((code) => code !== undefined)
+    .map(String);
+  const statuses = [
+    error?.$metadata?.httpStatusCode,
+    error?.statusCode,
+    error?.response?.status,
+  ].filter((status) => status !== undefined);
+  if (statuses.some((status) => Number(status) !== 404)) return false;
+  const objectMissing = codes.some((code) =>
+    ["NoSuchKey", "BlobNotFound"].includes(code),
+  );
+  // HEAD may return only NotFound for a nonexistent destination. That ambiguous
+  // response is insufficient evidence to complete a move whose source vanished.
+  return (
+    (objectMissing ||
+      (allowGeneric && statuses.length > 0 && codes.includes("NotFound"))) &&
+    codes.every((code) =>
+      [
+        "Error",
+        "RestError",
+        "S3ServiceException",
+        "NotFound",
+        "NoSuchKey",
+        "BlobNotFound",
+        "404",
+      ].includes(code),
+    )
+  );
+}
 const date = (value) => (value ? new Date(value).toISOString() : undefined);
 
 function snapshot(key, head) {
@@ -82,7 +118,7 @@ async function absent(s3, bucket, key) {
   try {
     await head(s3, bucket, key);
   } catch (error) {
-    if (notFound(error)) return;
+    if (notFound(error, true)) return;
     throw error;
   }
   throw new Error(
@@ -145,7 +181,10 @@ async function preview(
         keys.add(object.Key);
       }
       token = page.IsTruncated ? page.NextContinuationToken : undefined;
-      if (page.IsTruncated && (!token || seenTokens.has(token)))
+      if (
+        page.IsTruncated &&
+        (typeof token !== "string" || !token || seenTokens.has(token))
+      )
         throw new Error("The server returned invalid folder pagination.");
       if (token) seenTokens.add(token);
     } while (token);
@@ -223,6 +262,14 @@ async function copyObject(
         ...target,
         ...source,
         ...condition,
+        // CopyObject does not inherit Object Lock settings. Apply the same
+        // explicit protection policy as multipart creation, including expired
+        // retention. A provider rejection must never trigger a weaker retry.
+        ...Object.fromEntries(
+          objectLockAttributes
+            .filter((name) => sourceHead?.[name] !== undefined)
+            .map((name) => [name, sourceHead[name]]),
+        ),
         ...(attributes
           ? {
               ...preserve(sourceHead || {}),
@@ -382,14 +429,21 @@ async function execute(s3, plan) {
       if (plan.action !== "copy") {
         stage = "delete";
         // A move may have taken hours. Recheck after copy and use a server-side guard too.
-        await unchanged(s3, plan.bucket, item);
-        await s3.send(
-          new DeleteObjectCommand({
-            Bucket: plan.bucket,
-            Key: item.key,
-            IfMatch: item.etag,
-          }),
-        );
+        try {
+          await unchanged(s3, plan.bucket, item);
+          await s3.send(
+            new DeleteObjectCommand({
+              Bucket: plan.bucket,
+              Key: item.key,
+              IfMatch: item.etag,
+            }),
+          );
+        } catch (error) {
+          // The destination was verified above. An object-specific absence at
+          // either guarded source step already satisfies the move; a generic
+          // 404 can also mean a missing bucket/endpoint and must remain failed.
+          if (plan.action !== "move" || !notFound(error)) throw error;
+        }
         result.deleted++;
       }
       result.succeeded++;

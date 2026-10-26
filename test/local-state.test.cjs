@@ -28,6 +28,249 @@ async function directory(t) {
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
+
+function trackedIO(dir, failures = {}) {
+  const events = [];
+  const step = (event) => {
+    events.push(event);
+    const error = failures[event]?.shift();
+    if (error) throw error;
+  };
+  const kind = (target) =>
+    target === dir
+      ? "directory"
+      : target.endsWith(".tmp")
+        ? "temporary"
+        : target.includes(".corrupt-")
+          ? "corrupt"
+          : "recovery";
+  return {
+    events,
+    io: {
+      ...fs,
+      async open(target, flags, mode) {
+        const type = kind(target);
+        step(`open:${type}`);
+        if (type !== "directory") {
+          assert.equal(flags, "wx");
+          assert.equal(mode, 0o600);
+        }
+        const handle = await fs.open(target, flags, mode);
+        return {
+          async writeFile(data) {
+            step(`write:${type}`);
+            await handle.writeFile(data);
+          },
+          async sync() {
+            step(`sync:${type}`);
+            await handle.sync();
+          },
+          async close() {
+            await handle.close();
+            step(`close:${type}`);
+          },
+        };
+      },
+      async rename(from, to) {
+        step("rename");
+        await fs.rename(from, to);
+      },
+      async unlink(target) {
+        step(`unlink:${kind(target)}`);
+        await fs.unlink(target);
+      },
+    },
+  };
+}
+
+test("state writes flush and close private temporary data before rename, then flush the directory", async (t) => {
+  const dir = await directory(t);
+  const target = path.join(dir, "connections.json");
+  await fs.writeFile(target, "[]", { mode: 0o644 });
+  const { io, events } = trackedIO(dir);
+  const file = new local.JsonFile(target, { io });
+  await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+  await file.save([stored("new")]);
+  assert.deepEqual(events, [
+    "open:temporary",
+    "write:temporary",
+    "sync:temporary",
+    "close:temporary",
+    "rename",
+    "open:directory",
+    "sync:directory",
+    "close:directory",
+    "unlink:temporary",
+  ]);
+  assert.deepEqual(JSON.parse(await fs.readFile(target)), [stored("new")]);
+  if (process.platform !== "win32")
+    assert.equal((await fs.stat(target)).mode & 0o777, 0o600);
+});
+
+for (const failing of [
+  "open:temporary",
+  "write:temporary",
+  "sync:temporary",
+  "close:temporary",
+  "rename",
+]) {
+  test(`${failing} failure preserves the previous state and permits retry`, async (t) => {
+    const dir = await directory(t);
+    const target = path.join(dir, "connections.json");
+    const original = JSON.stringify([stored("old")]);
+    await fs.writeFile(target, original);
+    const failure = Object.assign(new Error("injected failure"), {
+      code: failing === "sync:temporary" ? "EINVAL" : "EIO",
+    });
+    const { io, events } = trackedIO(dir, { [failing]: [failure] });
+    const file = new local.JsonFile(target, { io });
+    await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await assert.rejects(file.save([stored("new")]), (e) => e === failure);
+    assert.equal(await fs.readFile(target, "utf8"), original);
+    assert.deepEqual(await fs.readdir(dir), ["connections.json"]);
+    assert.equal(events.includes("open:directory"), false);
+    if (failing !== "rename") assert.equal(events.includes("rename"), false);
+    if (failing === "open:temporary")
+      assert.equal(events.includes("unlink:temporary"), false);
+    await file.save([stored("retry")]);
+    assert.deepEqual(JSON.parse(await fs.readFile(target)), [stored("retry")]);
+  });
+}
+
+test("exclusive creation failures preserve an existing temporary file", async (t) => {
+  const dir = await directory(t);
+  const target = path.join(dir, "connections.json");
+  let collision;
+  const file = new local.JsonFile(target, {
+    io: {
+      ...fs,
+      async open(temporary, ...args) {
+        collision = temporary;
+        await fs.writeFile(temporary, "recoverable temporary data");
+        return fs.open(temporary, ...args);
+      },
+    },
+  });
+  await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+  await assert.rejects(file.save([]), { code: "EEXIST" });
+  assert.equal(
+    await fs.readFile(collision, "utf8"),
+    "recoverable temporary data",
+  );
+  await assert.rejects(fs.readFile(target), { code: "ENOENT" });
+});
+
+for (const failing of ["open:directory", "sync:directory", "close:directory"]) {
+  test(`${failing} failure reports uncertain durability while retaining the committed state`, async (t) => {
+    const dir = await directory(t);
+    const target = path.join(dir, "connections.json");
+    const failure = Object.assign(new Error("sensitive device detail"), {
+      code: "EIO",
+    });
+    const { io, events } = trackedIO(dir, { [failing]: [failure] });
+    const reports = [];
+    const file = new local.JsonFile(target, {
+      io,
+      report: (message) => reports.push(message),
+    });
+    await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await file.save([stored("new")]);
+    assert.deepEqual(JSON.parse(await fs.readFile(target)), [stored("new")]);
+    assert.equal(reports.length, 1);
+    assert.match(reports[0], /directory could not be flushed/);
+    assert.doesNotMatch(reports[0], /sensitive/);
+    assert.ok(events.indexOf("rename") < events.indexOf(failing));
+    await file.save([stored("retry")]);
+    assert.equal(reports.length, 1);
+  });
+}
+
+for (const code of ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]) {
+  test(`unsupported directory sync (${code}) still closes the directory and saves`, async (t) => {
+    const dir = await directory(t);
+    const target = path.join(dir, "connections.json");
+    const { io, events } = trackedIO(dir, {
+      "sync:directory": [Object.assign(new Error("unsupported"), { code })],
+    });
+    const reports = [];
+    const file = new local.JsonFile(target, {
+      io,
+      report: (message) => reports.push(message),
+    });
+    await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await file.save([stored("new")]);
+    assert.deepEqual(JSON.parse(await fs.readFile(target)), [stored("new")]);
+    assert.equal(events.includes("close:directory"), true);
+    assert.deepEqual(reports, []);
+  });
+}
+
+test("recovery copies flush private data and directory entries before returning", async (t) => {
+  const dir = await directory(t);
+  const target = path.join(dir, "connections.json");
+  const { io, events } = trackedIO(dir);
+  const file = new local.JsonFile(target, { io });
+  await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+  const backup = await file.recoveryCopy([stored("old")]);
+  assert.deepEqual(events, [
+    "open:recovery",
+    "write:recovery",
+    "sync:recovery",
+    "close:recovery",
+    "open:directory",
+    "sync:directory",
+    "close:directory",
+  ]);
+  assert.deepEqual(JSON.parse(await fs.readFile(backup)), [stored("old")]);
+  if (process.platform !== "win32")
+    assert.equal((await fs.stat(backup)).mode & 0o777, 0o600);
+});
+
+for (const failing of ["sync:corrupt", "sync:directory"]) {
+  test(`corrupt backup ${failing} failure blocks replacement and preserves recoverable bytes`, async (t) => {
+    const dir = await directory(t);
+    const target = path.join(dir, "connections.json");
+    const original = "recover-me";
+    await fs.writeFile(target, original);
+    const { io, events } = trackedIO(dir, {
+      [failing]: [new Error("injected failure")],
+    });
+    const file = new local.JsonFile(target, { io });
+    await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await assert.rejects(file.save([]), /backup/);
+    assert.equal(events.includes("rename"), false);
+    assert.equal(await fs.readFile(target, "utf8"), original);
+    const backup = (await fs.readdir(dir)).find((p) => p.includes(".corrupt-"));
+    assert.equal(await fs.readFile(path.join(dir, backup), "utf8"), original);
+    const restarted = new local.JsonFile(target);
+    await restarted.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await restarted.save([stored("recovered")]);
+    assert.deepEqual(JSON.parse(await fs.readFile(target)), [
+      stored("recovered"),
+    ]);
+  });
+}
+
+for (const failing of ["sync:recovery", "sync:directory"]) {
+  test(`recovery ${failing} failure preserves the original and the recovery copy`, async (t) => {
+    const dir = await directory(t);
+    const target = path.join(dir, "connections.json");
+    const original = JSON.stringify([stored("old")]);
+    await fs.writeFile(target, original);
+    const { io } = trackedIO(dir, {
+      [failing]: [new Error("flush failed")],
+    });
+    const file = new local.JsonFile(target, { io });
+    await file.load([], (data) => local.decodeProfiles(data, safeStorage));
+    await assert.rejects(file.recoveryCopy([stored("old")]), /flush failed/);
+    assert.equal(await fs.readFile(target, "utf8"), original);
+    const backup = (await fs.readdir(dir)).find((p) =>
+      p.includes(".recovery-"),
+    );
+    assert.equal(await fs.readFile(path.join(dir, backup), "utf8"), original);
+  });
+}
+
 for (const content of [
   '[{"credentials":"recover-me"}',
   '{"connections":[{"credentials":"recover-me"}]}',
@@ -87,7 +330,7 @@ test("backup failure and unreadable input block all saving; restarting after rep
   const file = new local.JsonFile(target, {
     io: {
       ...fs,
-      writeFile: async () => {
+      open: async () => {
         throw new Error("disk full");
       },
     },
@@ -180,6 +423,7 @@ async function mainFixture(t, initial = [stored("swift")], injected = {}) {
       whenReady: () => ({
         then: (fn) => {
           ready = fn();
+          return ready;
         },
       }),
       getPath: () => dir,
