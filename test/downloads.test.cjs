@@ -78,6 +78,177 @@ test("unsafe and nonportable object names reject without creating paths", async 
   assert.deepEqual(await fs.readdir(root), []);
 });
 
+test("exact mixed-case temporary and publication aliases reject in every path component and preserve bytes", async (t) => {
+  const { createHash } = require("node:crypto");
+  const root = await fixture(t);
+  const destination = path.join(root, "file.txt");
+  const temporaryHash = createHash("sha256")
+    .update(`${root}\0file.txt`)
+    .digest("hex")
+    .slice(0, 32);
+  const publicationHash = createHash("sha256")
+    .update(destination.normalize("NFC").toLowerCase())
+    .digest("hex")
+    .slice(0, 32);
+  const reserved = [
+    `.objectfilemanager-${temporaryHash}.part`,
+    `.objectfilemanager-${publicationHash}.publish`,
+  ];
+  let gets = 0;
+  for (const name of reserved) {
+    await fs.writeFile(path.join(root, name), "existing local bytes");
+    const alias = name.replace(".objectfilemanager-", ".ObJeCtFiLeMaNaGeR-");
+    for (const key of [alias, `${alias}/file`, `nested/${alias}/file`]) {
+      await assert.rejects(
+        plan(
+          { send: async () => ({ ContentLength: 5, ETag: '"first"' }) },
+          {
+            bucket: "b",
+            destination: root,
+            selection: [{ key }],
+          },
+        ),
+        /unsafe|nonportable/,
+      );
+      await assert.rejects(
+        transfer(
+          {
+            send: async () => {
+              gets++;
+            },
+          },
+          {
+            bucket: "b",
+            overwrite: true,
+          },
+          item(root, key),
+          signal(),
+        ),
+        /unsafe|nonportable/,
+      );
+      assert.equal(
+        await fs.readFile(path.join(root, name), "utf8"),
+        "existing local bytes",
+      );
+    }
+  }
+  assert.equal(gets, 0);
+  assert.deepEqual((await fs.readdir(root)).sort(), reserved.sort());
+});
+
+test("download selection canonicalizes ancestor aliases and persists root identity across restart", async (t) => {
+  const { Queue } = require("../src/queue.cjs");
+  const base = await fixture(t);
+  const actual = path.join(base, "actual");
+  const other = path.join(base, "other");
+  const alias = path.join(base, "alias");
+  await fs.mkdir(path.join(actual, "selected"), { recursive: true });
+  await fs.mkdir(path.join(other, "selected"), { recursive: true });
+  await fs.symlink(actual, alias, "dir");
+  const entries = await plan(
+    { send: async () => ({ ContentLength: 5, ETag: '"first"' }) },
+    {
+      bucket: "b",
+      destination: path.join(alias, "selected"),
+      selection: [{ key: "file.txt" }],
+    },
+  );
+  const root = path.join(actual, "selected");
+  assert.equal(entries[0].root, root);
+  assert.equal(entries[0].source, path.join(root, "file.txt"));
+  assert.ok(JSON.parse(entries[0].rootIdentity).ino);
+  const db = path.join(base, "queue.sqlite");
+  let q = new Queue(db, (_, job, entry, signal) =>
+    transfer(downloadable(), job, entry, signal),
+  );
+  t.after(() => q.db.close());
+  const id = q.createJob({
+    profile: "p",
+    bucket: "b",
+    kind: "download",
+    entries,
+    retries: 0,
+  });
+  q.db.close();
+  await fs.unlink(alias);
+  await fs.symlink(other, alias, "dir");
+  q = new Queue(db, (_, job, entry, signal) =>
+    transfer(downloadable(), job, entry, signal),
+  );
+  assert.equal(
+    q.db.prepare("SELECT rootIdentity FROM entries WHERE job=?").get(id)
+      .rootIdentity,
+    entries[0].rootIdentity,
+  );
+  await q.start(id, {});
+  await q.running.finished;
+  assert.equal(q.list()[0].state, "complete");
+  assert.equal(await fs.readFile(path.join(root, "file.txt"), "utf8"), "hello");
+  assert.deepEqual(await fs.readdir(path.join(other, "selected")), []);
+
+  // Reusing the same saved entry must reject a new directory at the saved path.
+  await fs.rename(root, `${root}-original`);
+  await fs.mkdir(root);
+  await fs.writeFile(path.join(root, "file.txt"), "keep replacement bytes");
+  let gets = 0;
+  await assert.rejects(
+    transfer(
+      {
+        send: async () => {
+          gets++;
+        },
+      },
+      { overwrite: true },
+      q.db.prepare("SELECT * FROM entries WHERE job=?").get(id),
+      signal(),
+    ),
+    /root changed/,
+  );
+  assert.equal(gets, 0);
+  assert.equal(
+    await fs.readFile(path.join(root, "file.txt"), "utf8"),
+    "keep replacement bytes",
+  );
+});
+
+test("download rejects root substitution during GET without touching replacement bytes", async (t) => {
+  const base = await fixture(t);
+  const root = path.join(base, "selected");
+  await fs.mkdir(root);
+  const [entry] = await plan(
+    { send: async () => ({ ContentLength: 5, ETag: '"first"' }) },
+    {
+      bucket: "b",
+      destination: root,
+      selection: [{ key: "file.txt" }],
+    },
+  );
+  await assert.rejects(
+    transfer(
+      {
+        send: async () => {
+          await fs.rename(root, `${root}-original`);
+          await fs.mkdir(root);
+          await fs.writeFile(
+            path.join(root, "file.txt"),
+            "keep replacement bytes",
+          );
+          return { Body: Readable.from([Buffer.from("hello")]) };
+        },
+      },
+      { overwrite: true },
+      entry,
+      signal(),
+    ),
+    /root changed/,
+  );
+  assert.deepEqual(await fs.readdir(root), ["file.txt"]);
+  assert.equal(
+    await fs.readFile(path.join(root, "file.txt"), "utf8"),
+    "keep replacement bytes",
+  );
+});
+
 test("case, Unicode and file-directory collisions reject entire plans", async (t) => {
   const root = await fixture(t);
   for (const keys of [

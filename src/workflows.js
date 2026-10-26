@@ -330,12 +330,13 @@ $("#sync-open").onclick = () => {
     const { token, plan } = result;
     const uploads = plan.entries || [],
       deletions = plan.deletions || [],
+      uncertain = plan.counts?.uncertain || 0,
       conflicts = (plan.rows || []).filter(
         (row) => row.status === "conflict",
       ).length;
     workflow(
       "Review folder sync",
-      `<p class="destination">${esc(plan.source)} → ${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${uploads.length} uploads · ${deletions.length} remote deletions</p>${conflicts ? `<p class="warning" role="status">${conflicts} unresolved ${conflicts === 1 ? "conflict" : "conflicts"}. Conflicting paths will remain unchanged. Only the non-conflicting changes below will be queued.</p>` : ""}<div class="review-list">${(plan.rows || []).map((row) => `<div class="detail-row"><b>${esc(row.key)}</b><small>${esc(row.status)} · ${esc(row.reason || "")}</small></div>`).join("")}</div>${deletions.length ? '<p class="warning">The remote deletions shown above are included in this sync.</p>' : ""}<div class="modal-footer"><button id="sync-apply" class="primary" ${uploads.length || deletions.length ? "" : "disabled"}>${conflicts ? "Queue non-conflicting changes" : "Confirm & queue sync"}</button></div>`,
+      `<p class="destination">${esc(plan.source)} → ${esc(ctx.bucket)}/${esc(ctx.prefix)}</p><p>${uploads.length} uploads · ${deletions.length} remote deletions</p>${uncertain ? `<p id="sync-uncertain" class="form-note">${uncertain} ${uncertain === 1 ? "file has" : "files have"} unproven content equality. Uploads remain included when a supported full-object checksum cannot confirm equality; review each row for conflicts.</p>` : ""}${conflicts ? `<p class="warning" role="status">${conflicts} unresolved ${conflicts === 1 ? "conflict" : "conflicts"}. Conflicting paths will remain unchanged. Only the non-conflicting changes below will be queued.</p>` : ""}<div class="review-list">${(plan.rows || []).map((row) => `<div class="detail-row"><b>${esc(row.key)}</b><small>${esc(row.status)} · ${esc(row.reason || "")}</small></div>`).join("")}</div>${deletions.length ? '<p class="warning">The remote deletions shown above are included in this sync.</p>' : ""}<div class="modal-footer"><button id="sync-apply" class="primary" ${uploads.length || deletions.length ? "" : "disabled"}>${conflicts ? "Queue non-conflicting changes" : "Confirm & queue sync"}</button></div>`,
     );
     if (!supports("conditionalWrite") && uploads.some((entry) => entry.etag)) {
       $("#sync-apply").disabled = true;
@@ -386,7 +387,9 @@ async function openObject(key) {
         "signedUrl",
         state.profile.provider === "OpenStack Swift"
           ? "Configure a Swift TempURL key in a new connection to generate temporary links."
-          : "Generating download links requires an Azure account key connection.",
+          : state.profile.provider === "Google Cloud Storage"
+            ? "Expiring download links require a Google service account signer with signing permission. User Application Default Credentials cannot sign; use service account credentials or impersonation."
+            : "Generating download links requires an Azure account key connection.",
       ],
     ]) {
       const button = $(selector);

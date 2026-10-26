@@ -27,13 +27,14 @@ const metadata = {
 };
 const revision = '"gcs:17200000000000001:3"';
 
-function fixture(t, respond, write) {
+function fixture(t, respond, write, connection = profile, auth = {}) {
   const requests = [];
   const files = [];
   class Storage {
     constructor(options) {
       this.options = options;
       this.authClient = {
+        ...auth,
         request: async (options) => {
           requests.push(options);
           return { data: await respond(options, requests.length) };
@@ -66,7 +67,7 @@ function fixture(t, respond, write) {
     }
   }
   t.mock.getter(require("@google-cloud/storage"), "Storage", () => Storage);
-  return { adapter: client(profile), requests, files };
+  return { adapter: client(connection), requests, files };
 }
 
 function send(adapter, name, input, options) {
@@ -318,8 +319,8 @@ test("GCS cancellation interrupts streaming uploads and prevents later requests"
 test("GCS versions retain native pagination, archived state, and signed links", async (t) => {
   const { adapter, requests, files } = fixture(t, () => ({
     items: [
-      { ...metadata, timeDeleted: "2026-10-02T00:00:00Z" },
-      { ...metadata, generation: "17200000000000002" },
+      { ...metadata, name: "k", timeDeleted: "2026-10-02T00:00:00Z" },
+      { ...metadata, name: "k", generation: "17200000000000002" },
     ],
     nextPageToken: "version-next",
   }));
@@ -491,4 +492,222 @@ test("GCS key files and explicit default credentials preserve SDK authentication
     /absolute path/,
   );
   assert.throws(() => client({ googleAuth: "default" }), /project ID/);
+});
+
+for (const key of [
+  "folder/世界",
+  "folder/😀",
+  "folder/\u{10ffff}",
+  "folder/a\u0000",
+])
+  test(`GCS exact-name versions stay bounded across Unicode pages: ${JSON.stringify(key)}`, async (t) => {
+    const { adapter, requests } = fixture(t, (request, count) => {
+      const params = new URL(request.url).searchParams;
+      assert.equal(params.get("prefix"), key);
+      assert.equal(params.get("startOffset"), key);
+      assert.equal(params.get("endOffset"), key + "\u0000");
+      assert.equal(params.get("versions"), "true");
+      assert.equal(params.get("maxResults"), "1");
+      assert.equal(
+        params.get("pageToken"),
+        count === 1 ? null : `page-${count}`,
+      );
+      // Empty intermediate pages must keep their native continuation.
+      if (count === 2) return { nextPageToken: "page-3" };
+      return {
+        items: [
+          { ...metadata, name: key, generation: String(count) },
+          // Defensively exclude a prefix sibling even from a malformed response.
+          { ...metadata, name: key + "sibling", generation: "4" },
+        ],
+        nextPageToken: count === 1 ? "page-2" : undefined,
+      };
+    });
+    let page = await send(adapter, "ListObjectVersionsCommand", {
+      Bucket: "b",
+      Prefix: key,
+      MaxKeys: 1,
+    });
+    assert.equal(page.Versions.length, 1);
+    for (let index = 0; index < 2; index++) {
+      page = await send(adapter, "ListObjectVersionsCommand", {
+        Bucket: "b",
+        Prefix: key,
+        MaxKeys: 1,
+        KeyMarker: page.NextKeyMarker,
+        VersionIdMarker: page.NextVersionIdMarker,
+      });
+      assert.ok(page.Versions.every((item) => item.Key === key));
+    }
+    assert.equal(page.IsTruncated, false);
+    assert.equal(requests.length, 3);
+  });
+
+for (const [label, credentials, signedUrl, remoteError] of [
+  ["user ADC", {}, false],
+  [
+    "ADC service account private key",
+    { client_email: "account@example.test", private_key: "key" },
+    true,
+  ],
+  ["remote service account", { client_email: "account@example.test" }, true],
+  [
+    "impersonated service account",
+    { client_email: "target@example.test" },
+    true,
+  ],
+  [
+    "remote signer missing IAM permission",
+    { client_email: "account@example.test" },
+    false,
+    new Error("iam.serviceAccounts.signBlob denied"),
+  ],
+])
+  test(`GCS signing capabilities resolve ${label} consistently`, async (t) => {
+    let probes = 0;
+    const { adapter, files } = fixture(
+      t,
+      () => metadata,
+      undefined,
+      { googleAuth: "default", projectId: "project" },
+      {
+        async getCredentials() {
+          return credentials;
+        },
+        async sign(value) {
+          assert.equal(value, "ObjectFileManager signing capability check");
+          probes++;
+          if (remoteError) throw remoteError;
+          return "signature";
+        },
+      },
+    );
+    const { capabilities } = require("../src/provider-capabilities.cjs");
+    assert.equal(
+      capabilities({ provider: "Google Cloud Storage", googleAuth: "default" })
+        .signedUrl,
+      false,
+    );
+    assert.equal(adapter.capabilities.signedUrl, false);
+    const resolved = await adapter.resolveCapabilities();
+    assert.equal(resolved.signedUrl, signedUrl);
+    assert.equal(capabilities(adapter).signedUrl, signedUrl);
+    await adapter.resolveCapabilities();
+    assert.equal(
+      probes,
+      credentials.client_email && !credentials.private_key ? 1 : 0,
+    );
+    if (signedUrl) {
+      assert.equal(
+        await adapter.signedUrl({ Bucket: "b", Key: "k" }, 60),
+        "https://storage.googleapis.com/signed",
+      );
+      assert.equal(files.length, 1);
+    } else {
+      await assert.rejects(
+        adapter.signedUrl({ Bucket: "b", Key: "k" }, 60),
+        remoteError
+          ? /signBlob denied/
+          : /User Application Default Credentials.*impersonation/,
+      );
+      assert.equal(files.length, 0);
+    }
+  });
+
+test("GCS key-file signing resolves runtime credentials while inline keys advertise signing immediately", async (t) => {
+  const { capabilities } = require("../src/provider-capabilities.cjs");
+  assert.equal(
+    capabilities({ ...profile, provider: "Google Cloud Storage" }).signedUrl,
+    true,
+  );
+  const connection = {
+    provider: "Google Cloud Storage",
+    googleAuth: "file",
+    projectId: "project",
+    keyFilename: "/private/key.json",
+  };
+  assert.equal(capabilities(connection).signedUrl, false);
+  const { adapter } = fixture(t, () => metadata, undefined, connection, {
+    async getCredentials() {
+      return { client_email: "account@example.test", private_key: "key" };
+    },
+  });
+  assert.equal((await adapter.resolveCapabilities()).signedUrl, true);
+});
+
+test("GCS only explicit structured object absence becomes NoSuchKey", async (t) => {
+  let message;
+  const { adapter } = fixture(t, () => {
+    throw Object.assign(new Error("Not found"), {
+      code: 404,
+      ...(message
+        ? {
+            response: {
+              status: 404,
+              data: { error: { message, errors: [{ reason: "notFound" }] } },
+            },
+          }
+        : {}),
+    });
+  });
+  for (const [errorMessage, expected] of [
+    [undefined, "NotFound"],
+    ["The specified bucket does not exist.", "NotFound"],
+    ["No such object: bucket/key", "NoSuchKey"],
+  ]) {
+    message = errorMessage;
+    await assert.rejects(
+      send(adapter, "HeadObjectCommand", { Bucket: "b", Key: "k" }),
+      (error) =>
+        error.name === expected && error.$metadata.httpStatusCode === 404,
+    );
+  }
+});
+
+test("GCS signing resolution follows actual SDK user and impersonated credential types", async (t) => {
+  const sdk = require("@google-cloud/storage");
+  const ActualStorage = sdk.Storage;
+  for (const [credentials, expected] of [
+    [
+      {
+        type: "authorized_user",
+        client_id: "id",
+        client_secret: "secret",
+        refresh_token: "refresh",
+      },
+      false,
+    ],
+    [
+      {
+        type: "impersonated_service_account",
+        service_account_impersonation_url:
+          "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/target@example.test:generateAccessToken",
+        source_credentials: {
+          type: "authorized_user",
+          client_id: "id",
+          client_secret: "secret",
+          refresh_token: "refresh",
+        },
+      },
+      true,
+    ],
+  ]) {
+    await t.test(credentials.type, async (t) => {
+      let probes = 0;
+      class Storage extends ActualStorage {
+        constructor(options) {
+          super({ ...options, credentials });
+          t.mock.method(this.authClient, "sign", async () => {
+            probes++;
+            return "signature";
+          });
+        }
+      }
+      t.mock.getter(sdk, "Storage", () => Storage);
+      const adapter = client({ googleAuth: "default", projectId: "project" });
+      t.after(() => adapter.destroy());
+      assert.equal((await adapter.resolveCapabilities()).signedUrl, expected);
+      assert.equal(probes, expected ? 1 : 0);
+    });
+  }
 });

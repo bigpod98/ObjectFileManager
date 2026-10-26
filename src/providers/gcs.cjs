@@ -20,7 +20,15 @@ function normalizeError(error) {
   const status = Number(error.response?.status || error.code);
   if (status >= 400 && status <= 599) {
     error.$metadata = { httpStatusCode: status };
-    if (status === 404) error.name = "NotFound";
+    if (status === 404) {
+      // GCS uses reason=notFound for both buckets and objects. Only its explicit
+      // object-specific JSON error can prove an object disappeared after copy.
+      const message = error.response?.data?.error?.message;
+      error.name =
+        typeof message === "string" && /^No such object: /u.test(message)
+          ? "NoSuchKey"
+          : "NotFound";
+    }
     if (status === 412) error.name = "PreconditionFailed";
     if (status === 403) error.name = "AccessDenied";
   }
@@ -132,6 +140,37 @@ function client(profile) {
         : {}),
   });
   const lifetime = new AbortController();
+  const connectionCapabilities =
+    require("../provider-capabilities.cjs").capabilities({
+      ...profile,
+      provider: "Google Cloud Storage",
+    });
+  let signingCapabilities;
+  let signingError;
+  async function resolveCapabilities() {
+    signingCapabilities ||= (async () => {
+      if (connectionCapabilities.signedUrl) return;
+      try {
+        const credentials = await storage.authClient.getCredentials();
+        if (!credentials.client_email)
+          throw new Error(
+            "User Application Default Credentials do not provide a service account signer. Use service account credentials or service account impersonation.",
+          );
+        // Without a local key, email alone does not prove IAM signBlob access.
+        if (!credentials.private_key)
+          await storage.authClient.sign(
+            "ObjectFileManager signing capability check",
+          );
+        connectionCapabilities.signedUrl = true;
+      } catch (error) {
+        signingError = error;
+        connectionCapabilities.signedUrl = false;
+      }
+    })();
+    await signingCapabilities;
+    lifetime.signal.throwIfAborted();
+    return { ...connectionCapabilities };
+  }
   const signalFor = (signal) =>
     signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal;
   const objectPath = (bucket, key) =>
@@ -254,21 +293,28 @@ function client(profile) {
         signal,
         params: {
           prefix: input.Prefix,
+          // The exclusive bound is the exact name plus the smallest Unicode
+          // scalar, so even supplementary characters and prefix siblings are
+          // bounded out on every page without a UTF-16 successor calculation.
+          startOffset: versions ? input.Prefix : undefined,
+          endOffset: versions ? input.Prefix + "\u0000" : undefined,
           delimiter: input.Delimiter,
           pageToken: versions ? input.VersionIdMarker : input.ContinuationToken,
           maxResults: input.MaxKeys || 500,
           versions: versions || undefined,
         },
       });
-      const items = (page.items || []).map((item) => ({
-        Key: item.name,
-        Size: Number(item.size),
-        ETag: etag(item),
-        LastModified: item.updated ? new Date(item.updated) : undefined,
-        ...(versions
-          ? { VersionId: item.generation, IsLatest: !item.timeDeleted }
-          : {}),
-      }));
+      const items = (page.items || [])
+        .filter((item) => !versions || item.name === input.Prefix)
+        .map((item) => ({
+          Key: item.name,
+          Size: Number(item.size),
+          ETag: etag(item),
+          LastModified: item.updated ? new Date(item.updated) : undefined,
+          ...(versions
+            ? { VersionId: item.generation, IsLatest: !item.timeDeleted }
+            : {}),
+        }));
       return versions
         ? {
             Versions: items,
@@ -371,21 +417,18 @@ function client(profile) {
 
   return {
     provider: "Google Cloud Storage",
-    capabilities: {
-      conditionalWrite: true,
-      conditionalDelete: true,
-      copy: true,
-      metadata: true,
-      versions: true,
-      signedUrl: true,
-      multipart: false,
-    },
+    capabilities: connectionCapabilities,
+    resolveCapabilities,
     send,
     upload,
     async signedUrl({ Bucket, Key }, expiresIn) {
       if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 604800)
         throw new Error("Link lifetime must be between 1 and 604800 seconds.");
       lifetime.signal.throwIfAborted();
+      if (!(await resolveCapabilities()).signedUrl)
+        throw unsupported(
+          `Expiring download links require a Google service account signer with signing permission. ${signingError?.message || "Signing credentials are unavailable."}`,
+        );
       const [url] = await storage
         .bucket(Bucket)
         .file(Key)

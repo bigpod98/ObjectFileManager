@@ -2,6 +2,7 @@ const fs = require("node:fs/promises");
 const { constants } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { selectRoot, validateRoot } = require("./local-roots.cjs");
 const {
   ListObjectsV2Command,
   HeadObjectCommand,
@@ -22,7 +23,7 @@ function safeParts(relative, directory = false) {
         /[. ]$/.test(part) ||
         /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part) ||
         Buffer.byteLength(part) > 255 ||
-        part.startsWith(".objectfilemanager-"),
+        part.toLowerCase().startsWith(".objectfilemanager-"),
     )
   ) {
     throw new Error(
@@ -128,7 +129,15 @@ async function digestFile(filename, signal) {
   }
 }
 
-async function recoverPublication(destination, existing, job, entry, signal) {
+async function recoverPublication(
+  destination,
+  existing,
+  job,
+  entry,
+  signal,
+  guard,
+) {
+  await guard();
   const marker = publicationMarker(destination);
   if (!(await statIfExists(marker))) return false;
   await checkDestination(marker, false);
@@ -149,6 +158,7 @@ async function recoverPublication(destination, existing, job, entry, signal) {
     await handle.close();
   }
   if (!existing) {
+    await guard();
     await fs.unlink(marker);
     return false;
   }
@@ -164,6 +174,7 @@ async function recoverPublication(destination, existing, job, entry, signal) {
     (await digestFile(destination, signal)) === record.sha256
   ) {
     signal.throwIfAborted();
+    await guard();
     await fs.unlink(marker);
     return true;
   }
@@ -174,13 +185,21 @@ async function recoverPublication(destination, existing, job, entry, signal) {
   );
 }
 
-async function publishWithoutLinks(temporary, destination, job, entry, signal) {
+async function publishWithoutLinks(
+  temporary,
+  destination,
+  job,
+  entry,
+  signal,
+  guard,
+) {
   const marker = publicationMarker(destination);
   const sha256 = await digestFile(temporary, signal);
   let record, source, target, owned;
   let ownsMarker = false;
   try {
     signal.throwIfAborted();
+    await guard();
     record = await fs.open(marker, "wx", 0o600);
     ownsMarker = true;
     await record.writeFile(
@@ -197,6 +216,7 @@ async function publishWithoutLinks(temporary, destination, job, entry, signal) {
     await record.sync();
     await record.close();
     record = null;
+    await guard();
     await checkDestination(destination, false);
     signal.throwIfAborted();
     try {
@@ -241,6 +261,7 @@ async function publishWithoutLinks(temporary, destination, job, entry, signal) {
     await target.sync();
     await target.close();
     target = null;
+    await guard();
     if (!sameFile(owned, await checkDestination(destination, false)))
       throw new Error("Download destination changed during publication.");
     if ((await digestFile(destination, signal)) !== sha256)
@@ -256,11 +277,15 @@ async function publishWithoutLinks(temporary, destination, job, entry, signal) {
         "Unable to verify download destination ownership; publication record retained.",
       );
     if (owned) {
+      await guard();
       // Do not remove a replacement created by another process.
       if (sameFile(owned, await checkDestination(destination, false)))
         await fs.unlink(destination);
     }
-    if (ownsMarker) await fs.unlink(marker);
+    if (ownsMarker) {
+      await guard();
+      await fs.unlink(marker);
+    }
   }
 }
 
@@ -268,11 +293,7 @@ async function plan(s3, { bucket, prefix = "", selection, destination }) {
   if (!bucket || !Array.isArray(selection) || !selection.length || !destination)
     throw new Error("Choose objects and a destination folder.");
   if (prefix && !prefix.endsWith("/")) prefix += "/";
-  const root = path.resolve(destination);
-  await directories(root);
-  const rootStat = await statIfExists(root);
-  if (!rootStat?.isDirectory())
-    throw new Error("The destination folder must exist.");
+  const { root, rootIdentity } = await selectRoot(destination);
   const objects = new Map();
   const add = (object) => {
     if (!object.Key || !object.Key.startsWith(prefix))
@@ -357,12 +378,14 @@ async function plan(s3, { bucket, prefix = "", selection, destination }) {
       key: object.Key,
       source,
       root,
+      rootIdentity,
       size: object.Size,
       directory,
       mtime: 0,
       etag: object.ETag || null,
     });
   }
+  await validateRoot(root, rootIdentity);
   return entries;
 }
 
@@ -379,13 +402,17 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
   const destination = path.join(root, ...parts);
   if (destination !== entry.source)
     throw new Error("Download destination is outside its root.");
-  await directories(root);
-  if (!(await statIfExists(root))?.isDirectory())
-    throw new Error("Download destination folder is missing.");
+  // Legacy rows have no saved identity; bind this attempt to its initial root.
+  const rootIdentity =
+    entry.rootIdentity || (await selectRoot(root)).rootIdentity;
+  const guard = () => validateRoot(root, rootIdentity);
+  await guard();
   const existing = await checkDestination(destination, !!entry.directory);
   if (entry.directory) {
     signal.throwIfAborted();
+    await guard();
     await directories(destination, true);
+    await guard();
     return "done";
   }
   const recovered = await recoverPublication(
@@ -394,7 +421,9 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     job,
     entry,
     signal,
+    guard,
   );
+  await guard();
   if (existing && !job.overwrite && !recovered) return "skipped";
   if (!entry.etag)
     throw new Error(
@@ -409,6 +438,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     path.dirname(destination),
     `.objectfilemanager-${hash}.part`,
   );
+  await guard();
   const stale = await statIfExists(temporary);
   if (stale) {
     if (!stale.isFile() || stale.isSymbolicLink())
@@ -462,6 +492,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     await file.sync();
     await file.close();
     file = null;
+    await guard();
     await checkDestination(destination, false);
     signal.throwIfAborted();
     if (job.overwrite) {
@@ -481,6 +512,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
             job,
             entry,
             signal,
+            guard,
           );
         if (error.code !== "EEXIST") throw error;
         await checkDestination(destination, false);
@@ -493,6 +525,7 @@ async function transfer(s3, job, entry, signal, onProgress = () => {}) {
     body?.destroy?.();
     await file?.close();
     if (ownedTemporary) {
+      await guard();
       await directories(path.dirname(temporary));
       await fs.unlink(temporary).catch((error) => {
         if (error.code !== "ENOENT") throw error;

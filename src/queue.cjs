@@ -4,39 +4,14 @@ const path = require("node:path");
 const { randomUUID, createHash } = require("node:crypto");
 const { constants } = require("node:fs");
 
-async function validateSourceParents(source, root) {
-  if (root) {
-    const relative = path.relative(root, source);
-    if (
-      !path.isAbsolute(root) ||
-      !path.isAbsolute(source) ||
-      relative === ".." ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative)
-    )
-      throw new Error(
-        "Source is outside its original folder. Create a new batch.",
-      );
-  }
-  // Legacy ordinary uploads have no root. Check the entire absolute ancestor
-  // chain for them too, including parents above the selected folder.
-  for (
-    let parent = path.dirname(path.resolve(source));
-    ;
-    parent = path.dirname(parent)
-  ) {
-    const stat = await fs.lstat(parent);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
-      throw new Error(
-        "Source parent changed or became a symbolic link. Create a new batch.",
-      );
-    if (parent === path.dirname(parent)) break;
-  }
-}
+const {
+  selectRoot,
+  validateParents: validateSourceParents,
+} = require("./local-roots.cjs");
 
 async function validateUploadSource(entry) {
   if (!entry.source) throw new Error("Source is missing. Create a new batch.");
-  await validateSourceParents(entry.source, entry.root);
+  await validateSourceParents(entry.source, entry.root, entry.rootIdentity);
   const stat = await fs.lstat(entry.source);
   if (
     stat.isSymbolicLink() ||
@@ -195,43 +170,159 @@ function settings(
 
 class Queue {
   constructor(file, transfer) {
-    this.db = new DatabaseSync(file);
+    try {
+      this.db = new DatabaseSync(file);
+    } catch (error) {
+      throw new Error(
+        `Could not open transfer database ${file}: ${error.message}. Existing files were preserved.`,
+        { cause: error },
+      );
+    }
     this.transfer = transfer;
     this.running = null;
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+    this.runtimeErrors = new Map();
+    try {
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, profile TEXT, bucket TEXT, prefix TEXT, state TEXT, created TEXT, concurrency INTEGER, overwrite INTEGER, warnings INTEGER DEFAULT 0, error TEXT);
       CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY, job TEXT, source TEXT, key TEXT, size INTEGER, mtime REAL, directory INTEGER, state TEXT DEFAULT 'pending', error TEXT, UNIQUE(job,key));
       CREATE INDEX IF NOT EXISTS entries_job_state ON entries(job,state,id);`);
-    const migrate = (table, columns) => {
-      const existing = new Set(
-        this.db
-          .prepare(`PRAGMA table_info(${table})`)
-          .all()
-          .map((column) => column.name),
+      const migrate = (table, columns) => {
+        const existing = new Set(
+          this.db
+            .prepare(`PRAGMA table_info(${table})`)
+            .all()
+            .map((column) => column.name),
+        );
+        for (const [name, type] of Object.entries(columns)) {
+          if (!existing.has(name))
+            this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+        }
+      };
+      migrate("jobs", {
+        kind: "TEXT NOT NULL DEFAULT 'upload'",
+        bandwidth: "INTEGER NOT NULL DEFAULT 0",
+        retries: "INTEGER NOT NULL DEFAULT 2",
+        runtimeFailure: "INTEGER NOT NULL DEFAULT 0",
+      });
+      migrate("entries", {
+        etag: "TEXT",
+        root: "TEXT",
+        attempts: "INTEGER NOT NULL DEFAULT 0",
+        expectedAbsent: "INTEGER NOT NULL DEFAULT 0",
+        sha256: "TEXT",
+        uploadToken: "TEXT",
+        integrityPending: "INTEGER NOT NULL DEFAULT 0",
+        integrityRevision: "TEXT",
+        rootIdentity: "TEXT",
+      });
+      this.db.exec(
+        "UPDATE entries SET state='pending' WHERE state IN ('uploading','downloading','transferring'); UPDATE jobs SET state='paused' WHERE state='running'; UPDATE jobs SET state='failed', error='Folder scan was interrupted. Remove this batch and select the source again.' WHERE state='scanning'",
       );
-      for (const [name, type] of Object.entries(columns)) {
-        if (!existing.has(name))
-          this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
-      }
-    };
-    migrate("jobs", {
-      kind: "TEXT NOT NULL DEFAULT 'upload'",
-      bandwidth: "INTEGER NOT NULL DEFAULT 0",
-      retries: "INTEGER NOT NULL DEFAULT 2",
-    });
-    migrate("entries", {
-      etag: "TEXT",
-      root: "TEXT",
-      attempts: "INTEGER NOT NULL DEFAULT 0",
-      expectedAbsent: "INTEGER NOT NULL DEFAULT 0",
-      sha256: "TEXT",
-      uploadToken: "TEXT",
-      integrityPending: "INTEGER NOT NULL DEFAULT 0",
-    });
-    this.db.exec(
-      "UPDATE entries SET state='pending' WHERE state IN ('uploading','downloading','transferring'); UPDATE jobs SET state='paused' WHERE state='running'; UPDATE jobs SET state='failed', error='Folder scan was interrupted. Remove this batch and select the source again.' WHERE state='scanning'",
-    );
+      this.initializeSummaries();
+    } catch (error) {
+      try {
+        this.db.close();
+      } catch {}
+      throw new Error(
+        `Could not open transfer database ${file}: ${error.message}. Existing files were preserved.`,
+        { cause: error },
+      );
+    }
     this.progress = new Map();
+    this.closed = false;
+  }
+  initializeSummaries() {
+    if (
+      this.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='queue_summaries'",
+        )
+        .get()
+    )
+      return;
+    // One initial backfill for existing queues. Thereafter triggers update only
+    // the affected job, in the same transaction as every entry mutation.
+    const fields = {
+      total: "1",
+      bytes: "COALESCE(size,0)",
+      done: "state='done'",
+      skipped: "state='skipped'",
+      failed: "state='failed'",
+      pending: "state='pending'",
+      cancelled: "state='cancelled'",
+      transferring: "state IN ('uploading','downloading','transferring')",
+      completedBytes:
+        "CASE WHEN state IN ('done','skipped') THEN COALESCE(size,0) ELSE 0 END",
+    };
+    const names = Object.keys(fields);
+    const values = (row) =>
+      Object.values(fields).map((value) =>
+        value.replace(/\b(size|state)\b/g, `${row}.$1`),
+      );
+    const add = (row) =>
+      `INSERT INTO queue_summaries(job,${names.join(",")}) VALUES(${row}.job,${values(row).join(",")}) ON CONFLICT(job) DO UPDATE SET ${names.map((name) => `${name}=${name}+excluded.${name}`).join(",")};`;
+    const subtract = `UPDATE queue_summaries SET ${names.map((name, i) => `${name}=${name}-(${values("old")[i]})`).join(",")} WHERE job=old.job;`;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .exec(`CREATE TABLE queue_summaries(job TEXT PRIMARY KEY, ${names.map((name) => `${name} INTEGER NOT NULL DEFAULT 0`).join(",")});
+        INSERT INTO queue_summaries SELECT job,${Object.values(fields)
+          .map((value) => `COALESCE(SUM(${value}),0)`)
+          .join(",")} FROM entries GROUP BY job;
+        CREATE TRIGGER queue_summary_insert AFTER INSERT ON entries BEGIN ${add("new")} END;
+        CREATE TRIGGER queue_summary_delete AFTER DELETE ON entries BEGIN ${subtract} END;
+        CREATE TRIGGER queue_summary_update AFTER UPDATE OF job,size,state ON entries
+          WHEN old.job IS NOT new.job OR old.size IS NOT new.size OR old.state IS NOT new.state
+          BEGIN ${subtract} ${add("new")} END;
+        CREATE TRIGGER queue_summary_remove AFTER DELETE ON jobs BEGIN DELETE FROM queue_summaries WHERE job=old.id; END;`);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw error;
+    }
+  }
+  recordError(id, error) {
+    const previous = this.runtimeErrors.get(id);
+    if (previous === error) return error;
+    let message = previous
+      ? `${previous.message}; Additional runtime failure: ${error.message || error}`
+      : error.message || String(error);
+    try {
+      this.db
+        .prepare(
+          "UPDATE jobs SET state='failed',error=?,runtimeFailure=1 WHERE id=?",
+        )
+        .run(message, id);
+    } catch (recordingError) {
+      message += ` (Could not save batch error: ${recordingError.message})`;
+    }
+    const failure = previous
+      ? new AggregateError([previous, error], message)
+      : new Error(message, { cause: error });
+    this.runtimeErrors.set(id, failure);
+    return failure;
+  }
+  async shutdown() {
+    this.closed = true;
+    let failure;
+    try {
+      await this.pause();
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      this.db.close();
+    } catch (error) {
+      failure = failure
+        ? new AggregateError(
+            [failure, error],
+            `${failure.message}; Could not close transfer database: ${error.message}`,
+          )
+        : error;
+    }
+    if (failure) throw failure;
   }
   async scan({
     profile,
@@ -264,7 +355,7 @@ class Queue {
       );
     this.configure(id, options);
     const insert = this.db.prepare(
-      "INSERT INTO entries(job,source,key,size,mtime,directory,root) VALUES(?,?,?,?,?,?,?)",
+      "INSERT INTO entries(job,source,key,size,mtime,directory,root,rootIdentity) VALUES(?,?,?,?,?,?,?,?)",
     );
     let batch = [],
       warnings = 0;
@@ -279,14 +370,13 @@ class Queue {
         throw e;
       }
     };
-    const walk = async (source, key, root) => {
-      await validateSourceParents(source, root);
+    const walk = async (source, key, root, rootIdentity) => {
+      await validateSourceParents(source, root, rootIdentity);
       const stat = await fs.lstat(source);
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
         warnings++;
         return;
       }
-      root ||= stat.isDirectory() ? source : path.dirname(source);
       if (Buffer.byteLength(key + (stat.isDirectory() ? "/" : "")) > 1024)
         throw new Error(`S3 key exceeds 1,024 bytes: ${key}`);
       batch.push([
@@ -297,6 +387,7 @@ class Queue {
         stat.mtimeMs,
         +stat.isDirectory(),
         root,
+        rootIdentity,
       ]);
       if (batch.length >= 250) flush();
       if (stat.isDirectory()) {
@@ -306,8 +397,9 @@ class Queue {
             path.join(source, entry.name),
             `${key}/${entry.name}`,
             root,
+            rootIdentity,
           );
-        await validateSourceParents(source, root);
+        await validateSourceParents(source, root, rootIdentity);
         const after = await fs.lstat(source);
         if (
           !after.isDirectory() ||
@@ -319,8 +411,25 @@ class Queue {
     };
     try {
       for (const selected of sources) {
-        const source = path.resolve(selected);
-        await walk(source, prefix + path.basename(source));
+        const original = path.resolve(selected);
+        const stat = await fs.lstat(original);
+        if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+          warnings++;
+          continue;
+        }
+        const selectedRoot = await selectRoot(
+          stat.isDirectory() ? original : path.dirname(original),
+          stat.isFile(),
+        );
+        const source = stat.isDirectory()
+          ? selectedRoot.root
+          : path.join(selectedRoot.root, path.basename(original));
+        await walk(
+          source,
+          prefix + path.basename(original),
+          selectedRoot.root,
+          selectedRoot.rootIdentity,
+        );
       }
       flush();
       this.db
@@ -359,7 +468,7 @@ class Queue {
     const config = settings(options);
     const id = randomUUID();
     const insert = this.db.prepare(
-      "INSERT INTO entries(job,source,key,size,mtime,directory,etag,root,expectedAbsent,sha256,uploadToken) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO entries(job,source,key,size,mtime,directory,etag,root,rootIdentity,expectedAbsent,sha256,uploadToken) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     this.db.exec("BEGIN");
     try {
@@ -411,6 +520,7 @@ class Queue {
           +!!entry.directory,
           entry.etag ?? null,
           entry.root ?? null,
+          entry.rootIdentity ?? null,
           +!!entry.expectedAbsent,
           entry.sha256 ?? null,
           kind === "upload" && (entry.expectedAbsent || entry.etag)
@@ -446,16 +556,16 @@ class Queue {
   list() {
     return this.db
       .prepare(
-        `SELECT j.*, COUNT(e.id) AS total,
-      COALESCE(SUM(e.size),0) AS bytes,
-      COALESCE(SUM(e.state='done'),0) AS done,
-      COALESCE(SUM(e.state='skipped'),0) AS skipped,
-      COALESCE(SUM(e.state='failed'),0) AS failed,
-      COALESCE(SUM(CASE WHEN e.state IN ('done','skipped') THEN e.size ELSE 0 END),0) AS completedBytes
-      FROM jobs j LEFT JOIN entries e ON e.job=j.id GROUP BY j.id ORDER BY j.created DESC`,
+        `SELECT j.*, ${["total", "bytes", "done", "skipped", "failed", "pending", "cancelled", "transferring", "completedBytes"].map((name) => `COALESCE(s.${name},0) AS ${name}`).join(",")}
+        FROM jobs j LEFT JOIN queue_summaries s ON s.job=j.id ORDER BY j.created DESC`,
       )
       .all()
       .map((j) => {
+        if (this.runtimeErrors.has(j.id)) {
+          j.state = "failed";
+          j.error = this.runtimeErrors.get(j.id).message;
+          j.runtimeFailure = 1;
+        }
         const active = [...this.progress.values()].filter(
           (p) => p.job === j.id,
         );
@@ -491,6 +601,7 @@ class Queue {
       .all(job, filter, filter, Math.max(0, Number(offset) || 0));
   }
   async start(id, context) {
+    if (this.closed) throw new Error("The transfer queue is closing.");
     if (this.running)
       throw new Error("Pause the current batch before starting another.");
     const job = this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
@@ -498,10 +609,10 @@ class Queue {
       !job ||
       job.state === "scanning" ||
       job.state === "cancelled" ||
-      job.error
+      job.error ||
+      this.runtimeErrors.has(id)
     )
       throw new Error("This batch is not ready to transfer.");
-    this.db.prepare("UPDATE jobs SET state='running' WHERE id=?").run(id);
     const limiter = new RateLimiter(job.bandwidth);
     job.throttle = (bytes, signal) => limiter.throttle(bytes, signal);
     const run = {
@@ -515,7 +626,6 @@ class Queue {
       started: performance.now(),
       samples: [],
     };
-    this.running = run;
     const next = this.db.prepare(
       "SELECT * FROM entries WHERE job=? AND state='pending' ORDER BY id LIMIT 1",
     );
@@ -538,11 +648,14 @@ class Queue {
         const controller = new AbortController();
         // Storage calls this before a write whose post-commit verification can
         // fail. Persist first so a crash cannot turn the object into a skip.
-        entry.markIntegrityPending = () => {
+        entry.markIntegrityPending = (revision) => {
           this.db
-            .prepare("UPDATE entries SET integrityPending=1 WHERE id=?")
-            .run(entry.id);
+            .prepare(
+              "UPDATE entries SET integrityPending=1,integrityRevision=? WHERE id=?",
+            )
+            .run(revision, entry.id);
           entry.integrityPending = 1;
+          entry.integrityRevision = revision;
         };
         run.controllers.add(controller);
         this.progress.set(entry.id, {
@@ -637,60 +750,94 @@ class Queue {
             )
             .run(result === "skipped" ? "skipped" : "done", entry.id);
         } catch (error) {
-          setState.run(
-            run.cancelled ? "cancelled" : run.paused ? "pending" : "failed",
-            run.cancelled || run.paused ? null : error.message || String(error),
-            entry.id,
-          );
+          try {
+            setState.run(
+              run.cancelled ? "cancelled" : run.paused ? "pending" : "failed",
+              run.cancelled || run.paused
+                ? null
+                : error.message || String(error),
+              entry.id,
+            );
+          } catch (recordingError) {
+            throw new AggregateError(
+              [error, recordingError],
+              `${error.message || error}; Could not save transfer failure: ${recordingError.message}`,
+            );
+          }
         } finally {
           run.controllers.delete(controller);
           this.progress.delete(entry.id);
         }
       }
     };
-    let finish;
-    run.finished = new Promise((resolve) => {
+    let finish, reject;
+    run.finished = new Promise((resolve, fail) => {
       finish = resolve;
+      reject = fail;
     });
-    const settle = () => {
-      if (run.workers.size) return;
-      const failed = this.db
-        .prepare(
-          "SELECT COUNT(*) AS n FROM entries WHERE job=? AND state='failed'",
-        )
-        .get(id).n;
-      this.db
-        .prepare("UPDATE jobs SET state=? WHERE id=?")
-        .run(
-          run.cancelled
-            ? "cancelled"
-            : run.paused
-              ? "paused"
-              : failed
-                ? "failed"
-                : "complete",
-          id,
-        );
-      this.running = null;
-      finish();
+    // Observe failures even when a caller only uses fire-and-forget start().
+    run.finished.catch(() => {});
+    const fail = (error) => {
+      if (!run.error) run.error = this.recordError(id, error);
+      run.paused = true;
+      for (const controller of run.controllers) controller.abort();
     };
-    run.launch = () => {
-      while (
-        !run.paused &&
-        !run.cancelled &&
-        run.workers.size < job.concurrency &&
-        next.get(id)
-      ) {
-        // Defer worker execution until it is tracked, including synchronously failing transfers.
-        const promise = Promise.resolve().then(worker);
-        run.workers.add(promise);
-        promise.finally(() => {
-          run.workers.delete(promise);
-          run.launch();
-          settle();
-        });
+    const settle = () => {
+      if (run.workers.size || run.settled) return;
+      run.settled = true;
+      try {
+        if (!run.error) {
+          const failed =
+            this.db
+              .prepare("SELECT failed FROM queue_summaries WHERE job=?")
+              .get(id)?.failed || 0;
+          this.db
+            .prepare("UPDATE jobs SET state=? WHERE id=?")
+            .run(
+              run.cancelled
+                ? "cancelled"
+                : run.paused
+                  ? "paused"
+                  : failed
+                    ? "failed"
+                    : "complete",
+              id,
+            );
+        }
+      } catch (error) {
+        fail(error);
+      } finally {
+        if (this.running === run) this.running = null;
+        if (run.error) reject(run.error);
+        else finish();
       }
     };
+    run.launch = () => {
+      if (run.settled) return;
+      try {
+        while (
+          !run.paused &&
+          !run.cancelled &&
+          run.workers.size < job.concurrency &&
+          next.get(id)
+        ) {
+          // Track workers before executing even synchronously failing transfers.
+          const promise = Promise.resolve().then(worker);
+          run.workers.add(promise);
+          const completed = (error) => {
+            if (error) fail(error);
+            run.workers.delete(promise);
+            run.launch();
+            settle();
+          };
+          promise.then(() => completed(), completed);
+        }
+      } catch (error) {
+        fail(error);
+      }
+    };
+    this.db.prepare("UPDATE jobs SET state='running' WHERE id=?").run(id);
+    this.running = run;
     run.launch();
     // Keep start()'s historical contract: callers can await queue.running.finished.
     if (!run.workers.size) setImmediate(settle);
@@ -703,9 +850,11 @@ class Queue {
     for (const controller of run.controllers) controller.abort();
     await run.finished;
   }
-  async cancel(id) {
+  async cancel(id, { cleanupPending = false } = {}) {
     const job = this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
     if (!job) throw new Error("Transfer batch not found.");
+    if (job.state === "complete" && !cleanupPending)
+      throw new Error("Completed batches cannot be cancelled.");
     if (job.state === "scanning")
       throw new Error("Wait for the scan to finish.");
     const run = this.running?.id === id ? this.running : null;
@@ -724,14 +873,29 @@ class Queue {
   retry(id) {
     if (this.running?.id === id) throw new Error("Pause this batch first.");
     const job = this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
-    if (!job || job.error || job.state === "scanning")
+    const runtimeFailure = !!(
+      job?.runtimeFailure || this.runtimeErrors.has(id)
+    );
+    if (!job || (job.error && !runtimeFailure) || job.state === "scanning")
       throw new Error("This batch cannot be retried. Create a new batch.");
-    this.db
-      .prepare(
-        "UPDATE entries SET state='pending',error=NULL WHERE job=? AND state IN ('failed','cancelled')",
-      )
-      .run(id);
-    this.db.prepare("UPDATE jobs SET state='paused' WHERE id=?").run(id);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          `UPDATE entries SET state='pending',error=NULL WHERE job=? AND state IN ('failed','cancelled'${runtimeFailure ? ",'uploading','downloading','transferring'" : ""})`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          "UPDATE jobs SET state='paused',error=NULL,runtimeFailure=0 WHERE id=?",
+        )
+        .run(id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.runtimeErrors.delete(id);
   }
   failureReport(id) {
     const job = this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
@@ -741,7 +905,8 @@ class Queue {
         "SELECT source,key,size,state,error,attempts FROM entries WHERE job=? AND state='failed' ORDER BY id",
       )
       .all(id);
-    if (job.error) rows.unshift({ state: "failed", error: job.error });
+    const error = this.runtimeErrors.get(id)?.message || job.error;
+    if (error) rows.unshift({ state: "failed", error });
     return rows;
   }
   remove(id) {
@@ -753,6 +918,7 @@ class Queue {
       throw new Error("Wait for the scan to finish.");
     this.db.prepare("DELETE FROM entries WHERE job=?").run(id);
     this.db.prepare("DELETE FROM jobs WHERE id=?").run(id);
+    this.runtimeErrors.delete(id);
   }
 }
 module.exports = {

@@ -1,6 +1,9 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { S3Client } = require("@aws-sdk/client-s3");
+const { readFileSync } = require("node:fs");
+const { execFileSync } = require("node:child_process");
+const { runInNewContext } = require("node:vm");
 const tools = require("../src/object-tools.cjs");
 
 function client(replies) {
@@ -55,6 +58,134 @@ test("search refuses a repeating provider token", async () => {
   await assert.rejects(
     tools.search(s3, { bucket: "b", token: "same" }),
     /invalid search continuation/,
+  );
+});
+
+test("search rejects missing, malformed and cyclic truncated-page tokens", async () => {
+  for (const token of [undefined, null, "", 42, {}, []]) {
+    await assert.rejects(
+      tools.search(
+        client([{ IsTruncated: true, NextContinuationToken: token }]),
+        { bucket: "b" },
+      ),
+      /invalid search continuation/,
+    );
+  }
+  const s3 = client([
+    { IsTruncated: true, NextContinuationToken: "one" },
+    { IsTruncated: true, NextContinuationToken: "two" },
+    { IsTruncated: true, NextContinuationToken: "one" },
+  ]);
+  await assert.rejects(tools.search(s3, { bucket: "b" }), /continuation/);
+  assert.equal(s3.calls.length, 3);
+});
+
+test("search rejects malformed or out-of-prefix keys instead of returning partial results", async () => {
+  for (const prefix of ["", "base/"]) {
+    for (const key of [
+      undefined,
+      null,
+      42,
+      {},
+      "",
+      ...(prefix ? ["other/file", "baseball/file"] : []),
+    ]) {
+      const s3 = client([
+        {
+          Contents: [{ Key: `${prefix}valid` }],
+          IsTruncated: true,
+          NextContinuationToken: "next",
+        },
+        { Contents: [{ Key: key }] },
+      ]);
+      await assert.rejects(
+        tools.search(s3, { bucket: "b", prefix, query: "valid" }),
+        /outside the requested search folder/,
+      );
+      assert.equal(s3.calls.length, 2);
+    }
+  }
+});
+
+test("search skips only its exact prefix marker and keeps nested directory markers", async () => {
+  const s3 = client([
+    {
+      Contents: [
+        { Key: "base/" },
+        { Key: "base/nested/" },
+        { Key: "base/nested/file" },
+      ],
+      NextContinuationToken: "stale",
+    },
+  ]);
+  const result = await tools.search(s3, { bucket: "b", prefix: "base/" });
+  assert.equal(result.scanned, 3);
+  assert.deepEqual(
+    result.objects.map((object) => object.key),
+    ["base/nested/", "base/nested/file"],
+  );
+  assert.equal(result.token, null);
+});
+
+test("shared browser search folding handles Turkish I and Unicode without changing key spelling", () => {
+  const browser = {};
+  runInNewContext(
+    readFileSync(require.resolve("../src/search.js"), "utf8"),
+    browser,
+  );
+  const main = require("../src/search.js");
+  const cases = [
+    ["I", "i"],
+    ["ı", "ı"],
+    ["İ", "i\u0307"],
+    ["I\u0307", "i\u0307"],
+    ["CAFÉ", "café"],
+    ["Σ", "σ"],
+    ["日本語/🗂️", "日本語/🗂️"],
+    ["e\u0301", "e\u0301"],
+  ];
+  for (const [text, expected] of cases) {
+    assert.equal(main.foldSearch(text), expected);
+    assert.equal(browser.objectSearch.foldSearch(text), expected);
+  }
+});
+
+test("recursive search and browser filtering agree under a Turkish process locale", () => {
+  execFileSync(
+    process.execPath,
+    [
+      "-e",
+      `
+    const assert = require("node:assert/strict");
+    const {readFileSync} = require("node:fs");
+    const {runInNewContext} = require("node:vm");
+    const {search} = require(${JSON.stringify(require.resolve("../src/object-tools.cjs"))});
+    const browser = {};
+    runInNewContext(readFileSync(${JSON.stringify(require.resolve("../src/search.js"))}, "utf8"), browser);
+    const names = ["I.txt", "ı.txt", "İ.txt", "I\\u0307.txt", "i.txt", "CAFÉ", "Σ", "日本語", "e\\u0301"];
+    const cases = [
+      ["i", ["I.txt", "İ.txt", "I\\u0307.txt", "i.txt"]],
+      ["ı", ["ı.txt"]],
+      ["İ", ["İ.txt", "I\\u0307.txt"]],
+      ["É", ["CAFÉ"]],
+      ["σ", ["Σ"]],
+      ["日本", ["日本語"]],
+      ["e\\u0301", ["e\\u0301"]],
+    ];
+    (async () => {
+      for (const [query, expected] of cases) {
+        const result = await search({send: async () => ({Contents: names.map(name => ({Key: "base/" + name}))})}, {bucket:"b",prefix:"base/",query});
+        assert.deepEqual(result.objects.map(object => object.key.slice(5)), expected);
+        const fold = browser.objectSearch.foldSearch;
+        assert.deepEqual(names.filter(name => fold(name).includes(fold(query))), expected);
+      }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `,
+    ],
+    {
+      env: { ...process.env, LANG: "tr_TR.UTF-8", LC_ALL: "tr_TR.UTF-8" },
+      stdio: "pipe",
+    },
   );
 });
 

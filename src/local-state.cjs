@@ -1,10 +1,45 @@
 const fs = require("node:fs/promises");
 const { randomUUID } = require("node:crypto");
+const { dirname } = require("node:path");
 const {
   PROVIDERS,
   restoreProfile,
   serializeProfile,
 } = require("./profiles.cjs");
+
+async function writeFlushed(io, target, data, removeOnFailure = false) {
+  const handle = await io.open(target, "wx", 0o600);
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+    await handle.close();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    if (removeOnFailure) await io.unlink(target).catch(() => {});
+    throw error;
+  }
+}
+
+async function syncDirectory(io, target) {
+  let handle;
+  try {
+    handle = await io.open(dirname(target), "r");
+    await handle.sync();
+  } catch (error) {
+    // Some filesystems do not implement directory fsync. Windows may also
+    // refuse to open directories through the file API.
+    if (
+      !["EINVAL", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"].includes(error.code) &&
+      !(
+        process.platform === "win32" &&
+        ["EISDIR", "EPERM", "EACCES"].includes(error.code)
+      )
+    )
+      throw error;
+  } finally {
+    if (handle) await handle.close();
+  }
+}
 
 // Queue the whole read/modify/persist operation. A rejection must not poison
 // later requests, and callers still receive their own operation's error.
@@ -48,7 +83,8 @@ class JsonFile {
     if (result.invalid) {
       const backup = `${this.target}.corrupt-${randomUUID()}.bak`;
       try {
-        await this.io.writeFile(backup, original, { mode: 0o600, flag: "wx" });
+        await writeFlushed(this.io, backup, original);
+        await syncDirectory(this.io, backup);
         this.blocked = null;
         this.report(
           `Invalid local state was preserved in ${backup}. Valid entries were recovered.`,
@@ -66,10 +102,8 @@ class JsonFile {
   async recoveryCopy(value) {
     if (this.blocked) throw this.blocked;
     const backup = `${this.target}.recovery-${randomUUID()}.bak`;
-    await this.io.writeFile(backup, JSON.stringify(value), {
-      mode: 0o600,
-      flag: "wx",
-    });
+    await writeFlushed(this.io, backup, JSON.stringify(value));
+    await syncDirectory(this.io, backup);
     return backup;
   }
 
@@ -80,12 +114,19 @@ class JsonFile {
   async save(value) {
     if (this.blocked) throw this.blocked;
     const temporary = `${this.target}.${randomUUID()}.tmp`;
+    // Only clean up a temporary that we successfully created exclusively.
+    await writeFlushed(this.io, temporary, JSON.stringify(value), true);
     try {
-      await this.io.writeFile(temporary, JSON.stringify(value), {
-        mode: 0o600,
-        flag: "wx",
-      });
       await this.io.rename(temporary, this.target);
+      try {
+        await syncDirectory(this.io, this.target);
+      } catch {
+        // Rename has committed the new contents. Rejecting now would leave
+        // callers using old in-memory state despite the installed file.
+        this.report(
+          `Saved ${this.target}, but its directory could not be flushed. The latest change may not survive a system crash.`,
+        );
+      }
     } finally {
       await this.io.unlink(temporary).catch(() => {});
     }

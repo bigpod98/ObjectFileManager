@@ -85,6 +85,22 @@ function unsupported(message) {
     name: "UnsupportedOperation",
   });
 }
+function rejectDotSegments(value) {
+  if (
+    String(value)
+      .split("/")
+      .some((part) => part === "." || part === "..")
+  )
+    throw unsupported(
+      "dot path segments ('.' and '..') cannot be preserved safely in SDK URLs.",
+    );
+}
+function validateBlobInput(input, defaultBucket) {
+  if (typeof input.Key !== "string" || !input.Key.length)
+    throw new Error("An Azure blob key is required.");
+  rejectDotSegments(input.Key);
+  rejectDotSegments(input.Bucket || defaultBucket);
+}
 function headers(input) {
   for (const key of [
     "Expires",
@@ -145,9 +161,13 @@ function client(profile, injected = {}) {
           credential || undefined,
           { retryOptions: { maxTries: 5 } },
         ));
-  const container = (input) =>
-    service.getContainerClient(input.Bucket || profile.bucket);
+  const container = (input) => {
+    const name = input.Bucket || profile.bucket;
+    rejectDotSegments(name);
+    return service.getContainerClient(name);
+  };
   const blob = (input) => {
+    validateBlobInput(input, profile.bucket);
     const result = container(input).getBlockBlobClient(input.Key);
     return input.VersionId === undefined
       ? result
@@ -255,6 +275,9 @@ function client(profile, injected = {}) {
   }
 
   async function copy(input, abortSignal) {
+    // Validate the destination before even reading the source. The SDK's URL
+    // construction normalizes dot segments and can escape the chosen container.
+    validateBlobInput(input, profile.bucket);
     if (
       input.MetadataDirective &&
       !["COPY", "REPLACE"].includes(input.MetadataDirective)

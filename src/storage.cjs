@@ -32,7 +32,14 @@ function client(profile) {
     maxAttempts: 5,
     requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED",
-    requestHandler: { connectionTimeout: 15000, requestTimeout: 120000 },
+    requestHandler: {
+      connectionTimeout: 15000,
+      // Bound inactivity separately so large or rate-limited uploads can run
+      // longer than two minutes. The SDK otherwise only warns on duration.
+      socketTimeout: 120000,
+      requestTimeout: 24 * 60 * 60 * 1000,
+      throwOnRequestTimeout: true,
+    },
   });
 }
 async function buckets(s3) {
@@ -72,6 +79,9 @@ async function browse(s3, bucket, prefix = "", token) {
         "Storage returned an object outside the requested folder.",
       );
   }
+  const next = r.IsTruncated ? r.NextContinuationToken : null;
+  if (r.IsTruncated && (typeof next !== "string" || !next || next === token))
+    throw new Error("Storage returned invalid folder pagination.");
   return {
     folders: (r.CommonPrefixes || []).map((p) => p.Prefix),
     objects: (r.Contents || [])
@@ -82,12 +92,13 @@ async function browse(s3, bucket, prefix = "", token) {
         modified: o.LastModified?.toISOString(),
         etag: o.ETag,
       })),
-    token: r.NextContinuationToken || null,
+    token: next,
   };
 }
 // Metadata identifies this durable queue operation, while hashing the returned
 // body proves that copied metadata or a concurrent write did not change bytes.
-// Undefined means absent; false means present but not verified.
+// Undefined means absent. A present object includes its pinned revision even
+// when it is not our upload, so recovery can compare the pre-write revision.
 async function reconcileUpload(s3, job, entry, signal) {
   let result;
   try {
@@ -101,13 +112,14 @@ async function reconcileUpload(s3, job, entry, signal) {
     throw error;
   }
   try {
+    const owned =
+      result.Metadata?.["objectfilemanager-upload-token"] === entry.uploadToken;
     if (
-      result.Metadata?.["objectfilemanager-upload-token"] !==
-        entry.uploadToken ||
+      !owned ||
       result.Metadata?.["objectfilemanager-sha256"] !== entry.sha256 ||
       result.ContentLength !== entry.size
     )
-      return false;
+      return { verified: false, owned, revision: result.ETag };
     if (!result.Body || !result.Body[Symbol.asyncIterator])
       throw new Error(
         "Cannot verify the previous upload: object body unavailable.",
@@ -121,34 +133,48 @@ async function reconcileUpload(s3, job, entry, signal) {
       size += chunk.length;
     }
     signal.throwIfAborted();
-    return size === entry.size && hash.digest("base64") === entry.sha256;
+    return {
+      verified: size === entry.size && hash.digest("base64") === entry.sha256,
+      owned,
+      revision: result.ETag,
+    };
   } finally {
     result.Body?.destroy?.();
   }
 }
 async function transfer(s3, job, entry, signal, onProgress) {
-  if (entry.integrityPending) {
-    const verified =
+  const recoveringIntegrity = !!(
+    entry.integrityPending ||
+    (s3.provider === "Google Cloud Storage" && entry.integrityRevision)
+  );
+  if (recoveringIntegrity) {
+    const previous =
       entry.uploadToken && entry.sha256
         ? await reconcileUpload(s3, job, entry, signal)
-        : false;
-    if (verified === true) return;
-    if (verified !== undefined)
+        : { verified: false };
+    if (previous?.verified) return;
+    const unchanged =
+      entry.integrityRevision &&
+      (previous === undefined
+        ? entry.integrityRevision === "*"
+        : previous.revision === entry.integrityRevision);
+    if (!unchanged)
       throw new Error(
         "The previous upload has not passed integrity verification. The remote object was left unchanged; review it before retrying.",
       );
-    // A missing object can be retried. Existence alone must never be accepted
-    // as success if another object appears between this read and the write.
   }
   const recoverable = !!(
-    (entry.expectedAbsent || entry.etag) &&
+    (entry.expectedAbsent ||
+      entry.etag ||
+      s3.provider === "Google Cloud Storage") &&
     entry.uploadToken &&
     entry.sha256
   );
   if (
     recoverable &&
+    !recoveringIntegrity &&
     entry.attempts > 1 &&
-    (await reconcileUpload(s3, job, entry, signal))
+    (await reconcileUpload(s3, job, entry, signal))?.verified
   )
     return;
   try {
@@ -157,17 +183,27 @@ async function transfer(s3, job, entry, signal, onProgress) {
     // A lost PutObject/CompleteMultipartUpload reply can be followed by a 412
     // even during the SDK's own retries. A matching verified object is the
     // only success evidence; permission/read failures must remain failures.
+    const previous =
+      recoverable && !signal.aborted
+        ? await reconcileUpload(s3, job, entry, signal)
+        : undefined;
+    if (previous?.verified) return;
     if (
-      recoverable &&
-      !signal.aborted &&
-      (await reconcileUpload(s3, job, entry, signal))
+      !job.overwrite &&
+      !entry.expectedAbsent &&
+      !entry.etag &&
+      !recoveringIntegrity &&
+      // A 412 after a lost commit reply must not hide our corrupt object.
+      // Native GCS writes always carry operation identity; only a present,
+      // foreign winner can be an ordinary create-only skip.
+      (s3.provider !== "Google Cloud Storage" || previous?.owned === false) &&
+      error.$metadata?.httpStatusCode === 412
     )
-      return;
+      return "skipped";
     throw error;
   }
 }
 async function uploadObject(s3, job, entry, signal, onProgress) {
-  const recoveringIntegrity = !!entry.integrityPending;
   if (entry.etag)
     require("./provider-capabilities.cjs").requireCapability(
       s3,
@@ -177,26 +213,76 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
   const skipExisting = !job.overwrite && !entry.expectedAbsent && !entry.etag;
   if (skipExisting) {
     try {
-      await s3.send(
+      const existing = await s3.send(
         new HeadObjectCommand({ Bucket: job.bucket, Key: entry.key }),
         { abortSignal: signal },
       );
-      if (recoveringIntegrity)
-        throw new Error(
-          "The previous upload has not passed integrity verification.",
-        );
-      return "skipped";
+      if (
+        entry.integrityPending ||
+        (s3.provider === "Google Cloud Storage" && entry.integrityRevision)
+      ) {
+        // A recovery write still has to carry its original precondition.
+        if (entry.integrityRevision === "*")
+          throw new Error(
+            "The previous upload has not passed integrity verification.",
+          );
+      } else {
+        if (
+          entry.uploadToken &&
+          entry.sha256 &&
+          existing.Metadata?.["objectfilemanager-upload-token"] ===
+            entry.uploadToken
+        ) {
+          if ((await reconcileUpload(s3, job, entry, signal))?.verified) return;
+          throw new Error(
+            "The previous upload has not passed integrity verification. Review it before retrying.",
+          );
+        }
+        return "skipped";
+      }
     } catch (e) {
       if (e.$metadata?.httpStatusCode !== 404 && e.name !== "NotFound") throw e;
     }
   }
   if (signal.aborted) throw new Error("Paused");
-  const condition =
+  let condition =
     entry.expectedAbsent || skipExisting
       ? { IfNoneMatch: "*" }
       : entry.etag
         ? { IfMatch: entry.etag }
         : {};
+  if (s3.provider === "Google Cloud Storage") {
+    let baseline = entry.integrityRevision;
+    if (!baseline) {
+      baseline = condition.IfNoneMatch || condition.IfMatch;
+      if (!baseline) {
+        try {
+          const current = await s3.send(
+            new HeadObjectCommand({ Bucket: job.bucket, Key: entry.key }),
+            { abortSignal: signal },
+          );
+          baseline = current.ETag;
+          if (!baseline)
+            throw new Error(
+              "Google Cloud Storage omitted the pre-write revision.",
+            );
+        } catch (error) {
+          if (
+            error.$metadata?.httpStatusCode !== 404 &&
+            error.name !== "NotFound"
+          )
+            throw error;
+          baseline = "*";
+        }
+      }
+    }
+    if (!baseline)
+      throw new Error(
+        "The previous upload has no durable pre-write revision. Review it and create a new batch.",
+      );
+    condition = baseline === "*" ? { IfNoneMatch: "*" } : { IfMatch: baseline };
+    entry.integrityRevision = baseline;
+  }
   const metadata =
     entry.uploadToken && entry.sha256
       ? {
@@ -208,7 +294,7 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
       : {};
   const markIntegrityPending = () => {
     if (s3.provider !== "Google Cloud Storage") return;
-    entry.markIntegrityPending?.();
+    entry.markIntegrityPending?.(entry.integrityRevision);
     entry.integrityPending = 1;
   };
   if (entry.directory) {
@@ -289,14 +375,6 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
           },
           { abortSignal: signal, onProgress: onProgress || (() => {}) },
         );
-      } catch (error) {
-        if (
-          skipExisting &&
-          !recoveringIntegrity &&
-          error.$metadata?.httpStatusCode === 412
-        )
-          return "skipped";
-        throw error;
       } finally {
         signal.removeEventListener("abort", abort);
         source.destroy();
@@ -339,9 +417,6 @@ async function uploadObject(s3, job, entry, signal, onProgress) {
     upload.on("httpUploadProgress", (p) => onProgress(p.loaded || 0));
     try {
       await upload.done();
-    } catch (e) {
-      if (skipExisting && e.$metadata?.httpStatusCode === 412) return "skipped";
-      throw e;
     } finally {
       signal.removeEventListener("abort", abort);
       source.destroy();

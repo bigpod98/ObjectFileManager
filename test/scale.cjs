@@ -1,4 +1,4 @@
-// Opt-in end-to-end workload. Creates and removes a dedicated bucket.
+// Local million-row polling benchmark, plus opt-in S3 workload when configured.
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -11,9 +11,73 @@ const {
   DeleteObjectsCommand,
   DeleteBucketCommand,
 } = require("@aws-sdk/client-s3");
+async function benchmarkQueue() {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "objectfilemanager-million-"),
+  );
+  const file = path.join(root, "queue.sqlite");
+  let queue = new Queue(file, async () => {});
+  try {
+    const id = queue.createJob({
+      profile: "benchmark",
+      bucket: "local",
+      kind: "download",
+      entries: [],
+    });
+    console.time("Populate 1,000,000 durable queue rows");
+    queue.db.exec("BEGIN");
+    queue.db
+      .prepare(
+        `WITH RECURSIVE rows(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM rows WHERE n<999999)
+      INSERT INTO entries(job,source,key,size,directory,state)
+      SELECT ?, '', CAST(n AS TEXT), 10, 0,
+        CASE n%5 WHEN 0 THEN 'done' WHEN 1 THEN 'skipped' WHEN 2 THEN 'failed' WHEN 3 THEN 'cancelled' ELSE 'pending' END
+      FROM rows`,
+      )
+      .run(id);
+    queue.db.exec("COMMIT");
+    console.timeEnd("Populate 1,000,000 durable queue rows");
+    queue.db.close();
+    queue = new Queue(file, async () => {});
+    const result = queue.list()[0];
+    assert.equal(result.total, 1000000);
+    assert.equal(result.bytes, 10000000);
+    for (const state of ["done", "skipped", "failed", "cancelled", "pending"])
+      assert.equal(result[state], 200000);
+    assert.equal(result.transferring, 0);
+    assert.equal(result.completedBytes, 4000000);
+    const timings = [];
+    let heartbeat = 0;
+    for (let i = 0; i < 500; i++) {
+      await new Promise((resolve) =>
+        setImmediate(() => {
+          heartbeat++;
+          resolve();
+        }),
+      );
+      const start = performance.now();
+      assert.equal(queue.list()[0].total, 1000000);
+      timings.push(performance.now() - start);
+    }
+    timings.sort((a, b) => a - b);
+    const p95 = timings[Math.floor(timings.length * 0.95)];
+    console.log(
+      `1,000,000-row queue: 500 polls, p50=${timings[250].toFixed(3)} ms, p95=${p95.toFixed(3)} ms, max=${timings.at(-1).toFixed(3)} ms; ${heartbeat} event-loop turns.`,
+    );
+    assert.ok(p95 < 100, `Queue poll p95 exceeded 100 ms: ${p95}`);
+  } finally {
+    await queue.shutdown();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
 (async () => {
-  if (!process.env.S3_TEST_ENDPOINT)
-    throw new Error("Set S3_TEST_ENDPOINT to a disposable local S3 service.");
+  await benchmarkQueue();
+  if (process.argv.includes("--queue-only") || !process.env.S3_TEST_ENDPOINT) {
+    console.log(
+      "Set S3_TEST_ENDPOINT to additionally run the 50,000-object S3 workload.",
+    );
+    return;
+  }
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "objectfilemanager-scale-"),
   );

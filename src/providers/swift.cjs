@@ -1,6 +1,7 @@
 // Native Swift account API, with optional Keystone authentication.
 const http = require("node:http");
 const https = require("node:https");
+const { urlToHttpOptions } = require("node:url");
 const { Readable } = require("node:stream");
 const { createHmac } = require("node:crypto");
 
@@ -129,9 +130,7 @@ function client(profile) {
     const response = await new Promise((resolve, reject) => {
       const req = (endpoint.protocol === "https:" ? https : http).request(
         {
-          protocol: endpoint.protocol,
-          hostname: endpoint.hostname,
-          port: endpoint.port,
+          ...urlToHttpOptions(endpoint),
           method,
           path: target,
           headers: { "x-auth-token": profile.swiftToken, ...headers },
